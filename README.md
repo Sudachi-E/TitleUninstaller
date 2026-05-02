@@ -1,4 +1,4 @@
-# WiiU Title Uninstaller
+# Title Uninstaller
 
 A batch title uninstaller for the Nintendo Wii U.
 
