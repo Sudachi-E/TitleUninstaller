@@ -9,14 +9,14 @@ endif
 TOPDIR ?= $(CURDIR)
 
 #-------------------------------------------------------------------------------
-APP_NAME		:= WiiUTitleUninstaller
+APP_NAME		:= TitleUninstaller
 APP_SHORTNAME	:= TitleUninstaller
 APP_AUTHOR		:= SudoTronics
 #-------------------------------------------------------------------------------
 
 include $(DEVKITPRO)/wut/share/wut_rules
 
-TARGET		:=	WiiUTitleUninstaller
+TARGET		:=	TitleUninstaller
 BUILD		:=	build
 SOURCES		:=	source
 DATA		:=	data
