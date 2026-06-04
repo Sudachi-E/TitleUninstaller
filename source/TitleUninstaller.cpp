@@ -288,7 +288,7 @@ static int GetGameCount(bool forUSB) {
         uint32_t fetched  = total;
         MCP_TitleList(handle, &fetched, list.data(), fetched * sizeof(MCPTitleListType));
         for (uint32_t i = 0; i < fetched; i++) {
-            if (list[i].appType != MCP_APP_TYPE_GAME) continue;
+            if (list[i].appType != MCP_APP_TYPE_GAME && list[i].appType != MCP_APP_TYPE_GAME_WII) continue;
             bool onUSB  = (strstr(list[i].indexedDevice, "usb") != nullptr);
             bool onNAND = (strstr(list[i].indexedDevice, "mlc") != nullptr);
             if (forUSB  && onUSB)  count++;
@@ -458,7 +458,7 @@ void TitleUninstaller::LoadTitles() {
         for (uint32_t i = 0; i < fetched; i++) {
             const auto& info = list[i];
 
-            bool isGame   = (info.appType == MCP_APP_TYPE_GAME);
+            bool isGame   = (info.appType == MCP_APP_TYPE_GAME || info.appType == MCP_APP_TYPE_GAME_WII);
             bool isUpdate = (info.appType == MCP_APP_TYPE_GAME_UPDATE);
             bool isDLC    = (info.appType == MCP_APP_TYPE_GAME_DLC);
 
