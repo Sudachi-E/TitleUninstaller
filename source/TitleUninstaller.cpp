@@ -15,6 +15,7 @@
 #include <cstring>
 #include <cinttypes>
 #include <cmath>
+#include <set>
 
 #define LOG(fmt, ...) do { \
     OSReport("[UNINSTALLER] " fmt "\n", ##__VA_ARGS__); \
@@ -53,6 +54,22 @@ TitleUninstaller::TitleUninstaller()
         LOG("Cache hit: %zu titles, skipping scan", titles.size());
         QueryUSBStorage();
         state = AppState::List;
+
+        auto& currentDest = (currentStorage == StorageLocation::USB)
+                            ? titlesUSB : titlesNAND;
+        currentDest = std::move(titles);
+
+        StorageLocation other = (currentStorage == StorageLocation::USB)
+                                ? StorageLocation::NAND : StorageLocation::USB;
+        currentStorage = other;
+        if (LoadTitleCache()) {
+            auto& otherDest = (other == StorageLocation::USB) ? titlesUSB : titlesNAND;
+            otherDest = std::move(titles);
+        }
+
+        currentStorage = (other == StorageLocation::USB)
+                         ? StorageLocation::NAND : StorageLocation::USB;
+        titles = std::move(currentDest);
     }
 }
 
@@ -160,6 +177,8 @@ void TitleUninstaller::LoadTitleMetadata(TitleEntry& t) {
         if (ACPGetTitleMetaXml(t.titleId, meta) == 0) {
             if (meta->shortname_en[0] != '\0')
                 t.name = meta->shortname_en;
+            if (t.sizeBytes == 0 && meta->app_size > 0)
+                t.sizeBytes = meta->app_size;
         }
         free(meta);
     }
@@ -221,6 +240,45 @@ void TitleUninstaller::LoadTitleMetadata(TitleEntry& t) {
     t.iconLoaded = false;
 }
 
+void TitleUninstaller::ScanComponents() {
+    int32_t h = MCP_Open();
+    if (h < 0) return;
+
+    uint32_t total = MCP_TitleCount(h);
+    if (total > 0) {
+        std::vector<MCPTitleListType> list(total);
+        uint32_t fetched = total;
+        MCP_TitleList(h, &fetched, list.data(), fetched * sizeof(MCPTitleListType));
+        ACPInitialize();
+        for (uint32_t i = 0; i < fetched; i++) {
+            const auto& info = list[i];
+            bool onUSB  = (strstr(info.indexedDevice, "usb") != nullptr);
+            bool onNAND = (strstr(info.indexedDevice, "mlc") != nullptr);
+            if (currentStorage == StorageLocation::USB  && !onUSB)  continue;
+            if (currentStorage == StorageLocation::NAND && !onNAND) continue;
+            uint32_t idHigh = (uint32_t)(info.titleId >> 32);
+            uint32_t lowId  = (uint32_t)(info.titleId & 0xFFFFFFFF);
+            if (idHigh == 0x0005000E && !updateMap.count(lowId)) {
+                auto t = std::make_unique<TitleEntry>();
+                t->titleId = info.titleId;
+                t->path    = info.path;
+                t->kind    = TitleKind::Update;
+                LoadTitleMetadata(*t);
+                updateMap[lowId] = std::move(t);
+            } else if (idHigh == 0x0005000C && !dlcMap.count(lowId)) {
+                auto t = std::make_unique<TitleEntry>();
+                t->titleId = info.titleId;
+                t->path    = info.path;
+                t->kind    = TitleKind::DLC;
+                LoadTitleMetadata(*t);
+                dlcMap[lowId] = std::move(t);
+            }
+        }
+        ACPFinalize();
+    }
+    MCP_Close(h);
+}
+
 static const char* CACHE_PATH_USB  = "fs:/vol/external01/wiiu/apps/WiiUTitleUninstaller/cache_usb.txt";
 static const char* CACHE_PATH_NAND = "fs:/vol/external01/wiiu/apps/WiiUTitleUninstaller/cache_nand.txt";
 static const char* PREFS_PATH      = "fs:/vol/external01/wiiu/apps/WiiUTitleUninstaller/prefs.txt";
@@ -236,6 +294,7 @@ void TitleUninstaller::SavePrefs() {
     FILE* f = fopen(PREFS_PATH, "w");
     if (!f) return;
     fprintf(f, "theme=%d\n", (int)themeMode);
+    fprintf(f, "storage=%d\n", (int)currentStorage);
     fclose(f);
 }
 
@@ -252,6 +311,10 @@ void TitleUninstaller::LoadPrefs() {
             else
                 Gfx::SetTheme(Gfx::MakeDarkTheme());
         }
+        if (sscanf(line, "storage=%d", &val) == 1) {
+            currentStorage = (val == (int)StorageLocation::NAND)
+                             ? StorageLocation::NAND : StorageLocation::USB;
+        }
     }
     fclose(f);
 }
@@ -262,8 +325,29 @@ void TitleUninstaller::SaveTitleCache() {
     FILE* f = fopen(path, "w");
     if (!f) { LOG("SaveTitleCache: fopen failed"); return; }
 
-    // Count header so LoadTitleCache can detect changes fast
-    fprintf(f, "#count=%zu\n", titles.size());
+    int rawCount = 0;
+    {
+        int32_t h = MCP_Open();
+        if (h >= 0) {
+            uint32_t total = MCP_TitleCount(h);
+            if (total > 0) {
+                std::vector<MCPTitleListType> list(total);
+                uint32_t fetched = total;
+                MCP_TitleList(h, &fetched, list.data(), fetched * sizeof(MCPTitleListType));
+                for (uint32_t i = 0; i < fetched; i++) {
+                    if (list[i].appType != MCP_APP_TYPE_GAME && list[i].appType != MCP_APP_TYPE_GAME_WII) continue;
+                    uint32_t idHigh = (uint32_t)(list[i].titleId >> 32);
+                    if (idHigh != 0x00050000 && idHigh != 0x00050002) continue;
+                    bool onUSB  = (strstr(list[i].indexedDevice, "usb") != nullptr);
+                    bool onNAND = (strstr(list[i].indexedDevice, "mlc") != nullptr);
+                    if (currentStorage == StorageLocation::USB  && onUSB)  rawCount++;
+                    if (currentStorage == StorageLocation::NAND && onNAND) rawCount++;
+                }
+            }
+            MCP_Close(h);
+        }
+    }
+    fprintf(f, "#count=%d\n", rawCount);
 
     for (const auto& t : titles) {
         std::string safeName = t->name;
@@ -289,6 +373,8 @@ static int GetGameCount(bool forUSB) {
         MCP_TitleList(handle, &fetched, list.data(), fetched * sizeof(MCPTitleListType));
         for (uint32_t i = 0; i < fetched; i++) {
             if (list[i].appType != MCP_APP_TYPE_GAME && list[i].appType != MCP_APP_TYPE_GAME_WII) continue;
+            uint32_t idHigh = (uint32_t)(list[i].titleId >> 32);
+            if (idHigh != 0x00050000 && idHigh != 0x00050002) continue;
             bool onUSB  = (strstr(list[i].indexedDevice, "usb") != nullptr);
             bool onNAND = (strstr(list[i].indexedDevice, "mlc") != nullptr);
             if (forUSB  && onUSB)  count++;
@@ -338,6 +424,10 @@ bool TitleUninstaller::LoadTitleCache() {
         uint64_t titleId = 0;
         if (sscanf(line, "%" SCNx64, &titleId) != 1 || titleId == 0) continue;
 
+        // Reject cached entries that aren't base games
+        uint32_t idHigh = (uint32_t)(titleId >> 32);
+        if (idHigh != 0x00050000 && idHigh != 0x00050002) continue;
+
         uint64_t sizeBytes = 0;
         sscanf(p2 + 1, "%" SCNu64, &sizeBytes);
 
@@ -346,7 +436,7 @@ bool TitleUninstaller::LoadTitleCache() {
         t->path      = p1 + 1;
         t->sizeBytes = sizeBytes;
         t->name      = p3 + 1;
-        t->kind      = TitleKind::Game;
+        t->kind      = (idHigh == 0x00050002) ? TitleKind::GameVC : TitleKind::Game;
         cached.push_back(std::move(t));
     }
     fclose(f);
@@ -458,41 +548,76 @@ void TitleUninstaller::LoadTitles() {
         for (uint32_t i = 0; i < fetched; i++) {
             const auto& info = list[i];
 
-            bool isGame   = (info.appType == MCP_APP_TYPE_GAME || info.appType == MCP_APP_TYPE_GAME_WII);
-            bool isUpdate = (info.appType == MCP_APP_TYPE_GAME_UPDATE);
-            bool isDLC    = (info.appType == MCP_APP_TYPE_GAME_DLC);
-
-            // Only show base games — updates and DLC are left untouched.
-            // Save data is a separate title type and is never affected.
-            (void)isUpdate; (void)isDLC;
-            if (!isGame) continue;
-
             // Filter by active storage location
             bool onUSB  = (strstr(info.indexedDevice, "usb") != nullptr);
             bool onNAND = (strstr(info.indexedDevice, "mlc") != nullptr);
             if (currentStorage == StorageLocation::USB  && !onUSB)  continue;
             if (currentStorage == StorageLocation::NAND && !onNAND) continue;
 
-            auto t = std::make_unique<TitleEntry>();
-            t->titleId = info.titleId;
-            t->path    = info.path;
-            t->kind    = TitleKind::Game;
+            uint32_t idHigh = (uint32_t)(info.titleId >> 32);
 
-            char buf[17];
-            snprintf(buf, sizeof(buf), "%016" PRIx64, t->titleId);
-            t->name = buf;
+            if (idHigh == 0x00050000 || idHigh == 0x00050002) {
+                // Base game (or GameVC)
+                bool isGame = (info.appType == MCP_APP_TYPE_GAME || info.appType == MCP_APP_TYPE_GAME_WII);
+                if (!isGame) continue;
 
-            LoadTitleMetadata(*t);
-            titles.push_back(std::move(t));
+                auto t = std::make_unique<TitleEntry>();
+                t->titleId = info.titleId;
+                t->path    = info.path;
+                t->kind    = (idHigh == 0x00050002) ? TitleKind::GameVC : TitleKind::Game;
 
-            if (titles.size() % 10 == 0) {
-                WHBProcIsRunning();
+                char buf[17];
+                snprintf(buf, sizeof(buf), "%016" PRIx64, t->titleId);
+                t->name = buf;
+
+                LoadTitleMetadata(*t);
+                titles.push_back(std::move(t));
+
+                if (titles.size() % 10 == 0) {
+                    WHBProcIsRunning();
+                }
+            } else if (idHigh == 0x0005000E) {
+                // Update
+                uint32_t lowId = (uint32_t)(info.titleId & 0xFFFFFFFF);
+                auto t = std::make_unique<TitleEntry>();
+                t->titleId = info.titleId;
+                t->path    = info.path;
+                t->kind    = TitleKind::Update;
+                char buf[17];
+                snprintf(buf, sizeof(buf), "%016" PRIx64, t->titleId);
+                t->name = buf;
+                LoadTitleMetadata(*t);
+                updateMap[lowId] = std::move(t);
+            } else if (idHigh == 0x0005000C) {
+                // DLC
+                uint32_t lowId = (uint32_t)(info.titleId & 0xFFFFFFFF);
+                auto t = std::make_unique<TitleEntry>();
+                t->titleId = info.titleId;
+                t->path    = info.path;
+                t->kind    = TitleKind::DLC;
+                char buf[17];
+                snprintf(buf, sizeof(buf), "%016" PRIx64, t->titleId);
+                t->name = buf;
+                LoadTitleMetadata(*t);
+                dlcMap[lowId] = std::move(t);
             }
         }
     }
 
-    // Apply current sort mode
     ApplySort();
+
+    // Remove duplicate game names (regional variants share the same shortname_en)
+    {
+        std::set<std::string> seen;
+        titles.erase(
+            std::remove_if(titles.begin(), titles.end(),
+                [&seen](const std::unique_ptr<TitleEntry>& t) {
+                    if (seen.count(t->name)) return true;
+                    seen.insert(t->name);
+                    return false;
+                }),
+            titles.end());
+    }
 
     // Close the scan handle — Start Uninstall opens a fresh one
     MCP_Close(mcpHandle);
@@ -533,9 +658,55 @@ void TitleUninstaller::LoadNextPendingIcon() {
 
 void TitleUninstaller::StartUninstall() {
     uninstallQueue.clear();
-    for (int i = 0; i < (int)titles.size(); i++) {
-        if (titles[i]->checked) uninstallQueue.push_back(i);
+
+    if (!componentChoices.empty()) {
+        for (const auto& cc : componentChoices) {
+            TitleEntry& t = *titles[cc.titleIdx];
+            uint32_t lowId = (uint32_t)(t.titleId & 0xFFFFFFFF);
+            if (cc.wantGame) {
+                UninstallJob job;
+                job.path = t.path;
+                job.name = t.name;
+                job.removeIdx = cc.titleIdx;
+                uninstallQueue.push_back(job);
+            }
+            if (cc.wantUpdate) {
+                auto it = updateMap.find(lowId);
+                if (it != updateMap.end()) {
+                    UninstallJob job;
+                    job.path = it->second->path;
+                    job.name = it->second->name + " (Update)";
+                    job.removeIdx = -1;
+                    uninstallQueue.push_back(job);
+                }
+            }
+            if (cc.wantDLC) {
+                auto it = dlcMap.find(lowId);
+                if (it != dlcMap.end()) {
+                    UninstallJob job;
+                    job.path = it->second->path;
+                    job.name = it->second->name + " (DLC)";
+                    job.removeIdx = -1;
+                    uninstallQueue.push_back(job);
+                }
+            }
+            if (!cc.wantGame) {
+                titles[cc.titleIdx]->checked = false;
+            }
+        }
+        componentChoices.clear();
+    } else {
+        for (int i = 0; i < (int)titles.size(); i++) {
+            if (titles[i]->checked) {
+                UninstallJob job;
+                job.path = titles[i]->path;
+                job.name = titles[i]->name;
+                job.removeIdx = i;
+                uninstallQueue.push_back(job);
+            }
+        }
     }
+
     uninstallCurrent    = 0;
     uninstallSucceeded  = 0;
     uninstallFailed     = 0;
@@ -543,7 +714,6 @@ void TitleUninstaller::StartUninstall() {
     uninstallSeenActive = false;
     uninstallPollFrames = 0;
 
-    // Open a fresh MCP handle for the uninstall operations
     if (mcpHandle >= 0) { MCP_Close(mcpHandle); mcpHandle = -1; }
     mcpHandle = MCP_Open();
     if (mcpHandle < 0) {
@@ -552,22 +722,26 @@ void TitleUninstaller::StartUninstall() {
     }
 
     state = AppState::Uninstalling;
-    LOG("Starting batch uninstall of %zu titles", uninstallQueue.size());
+    LOG("Starting batch uninstall of %zu jobs", uninstallQueue.size());
 }
 
 bool TitleUninstaller::UninstallNext() {
     if (uninstallCurrent >= (int)uninstallQueue.size()) {
         if (mcpHandle >= 0) { MCP_Close(mcpHandle); mcpHandle = -1; }
 
-        // Remove successfully uninstalled titles from the in-memory list
-        // and rewrite the cache — no full rescan needed
-        std::vector<std::unique_ptr<TitleEntry>> remaining;
-        for (auto& t : titles) {
-            if (!t->checked) {
-                remaining.push_back(std::move(t));
-            }
+        // Remove titles marked for removal (indices tracked in UninstallJob)
+        std::set<int> removeSet;
+        for (const auto& job : uninstallQueue) {
+            if (job.removeIdx >= 0) removeSet.insert(job.removeIdx);
         }
-        titles = std::move(remaining);
+        if (!removeSet.empty()) {
+            std::vector<std::unique_ptr<TitleEntry>> remaining;
+            for (int i = 0; i < (int)titles.size(); i++) {
+                if (removeSet.count(i)) continue;
+                remaining.push_back(std::move(titles[i]));
+            }
+            titles = std::move(remaining);
+        }
 
         // Clamp selection
         if (selectedIndex >= (int)titles.size())
@@ -577,26 +751,23 @@ bool TitleUninstaller::UninstallNext() {
 
         SaveTitleCache();
 
+        // Refresh update/DLC maps so stale entries don't persist
+        updateMap.clear();
+        dlcMap.clear();
+        ScanComponents();
+
         state = AppState::Done;
         return false;
     }
 
-    int idx = uninstallQueue[uninstallCurrent];
-    TitleEntry& t = *titles[idx];
+    UninstallJob& job = uninstallQueue[uninstallCurrent];
 
     if (!uninstallInProgress) {
-        // Safety check — never uninstall updates, DLC, or save data
-        if (t.kind != TitleKind::Game) {
-            LOG("Skipping non-game title: %s (kind=%d)", t.name.c_str(), (int)t.kind);
-            uninstallFailed++;
-            uninstallCurrent++;
-            return true;
-        }
-        LOG("Uninstalling: %s  path=%s", t.name.c_str(), t.path.c_str());
+        LOG("Uninstalling: %s  path=%s", job.name.c_str(), job.path.c_str());
         memset(&mcpTitleInfo, 0, sizeof(mcpTitleInfo));
-        MCPError err = MCP_UninstallTitleAsync(mcpHandle, t.path.c_str(), &mcpTitleInfo);
+        MCPError err = MCP_UninstallTitleAsync(mcpHandle, job.path.c_str(), &mcpTitleInfo);
         if (err != 0) {
-            LOG("MCP_UninstallTitleAsync failed for %s: %d", t.name.c_str(), (int)err);
+            LOG("MCP_UninstallTitleAsync failed for %s: %d", job.name.c_str(), (int)err);
             uninstallFailed++;
             uninstallCurrent++;
             return true;
@@ -612,14 +783,14 @@ bool TitleUninstaller::UninstallNext() {
     uninstallPollFrames++;
 
     LOG("Poll[%d] '%s': inProgress=%u contentsTotal=%u",
-        uninstallPollFrames, t.name.c_str(), prog.inProgress, prog.contentsTotal);
+        uninstallPollFrames, job.name.c_str(), prog.inProgress, prog.contentsTotal);
 
     if (prog.inProgress == 1) {
         uninstallSeenActive = true;
     } else if (prog.inProgress == 0) {
         if (uninstallSeenActive || uninstallPollFrames > 10) {
             LOG("Uninstall complete for '%s' (frames=%d seenActive=%d)",
-                t.name.c_str(), uninstallPollFrames, (int)uninstallSeenActive);
+                job.name.c_str(), uninstallPollFrames, (int)uninstallSeenActive);
             uninstallSucceeded++;
             uninstallInProgress  = false;
             uninstallSeenActive  = false;
@@ -740,31 +911,71 @@ void TitleUninstaller::Update(Input& input) {
             for (int s = 0; s < steps; s++) moveSelection(dir);
         }
 
-        // A = toggle checkbox
         if (input.IsPressed(Input::BUTTON_A)) {
             if (!titles.empty())
                 titles[selectedIndex]->checked = !titles[selectedIndex]->checked;
         }
 
-        // Y = select all / deselect all
         if (input.IsPressed(Input::BUTTON_Y)) {
             bool anyUnchecked = false;
             for (const auto& t : titles) if (!t->checked) { anyUnchecked = true; break; }
             for (auto& t : titles) t->checked = anyUnchecked;
         }
 
-        // + = confirm delete (only if something is checked)
         if (input.IsPressed(Input::BUTTON_PLUS)) {
-            if (CheckedCount() > 0) state = AppState::ConfirmDelete;
+            if (CheckedCount() > 0) {
+                // Lazy-populate update/DLC maps if never scanned
+                if (updateMap.empty() && dlcMap.empty()) {
+                    ScanComponents();
+                }
+                bool hasComponents = false;
+                for (const auto& t : titles) {
+                    if (t->checked) {
+                        uint32_t lowId = (uint32_t)(t->titleId & 0xFFFFFFFF);
+                        if (updateMap.count(lowId) || dlcMap.count(lowId)) {
+                            hasComponents = true;
+                            break;
+                        }
+                    }
+                }
+                if (hasComponents) {
+                    componentChoices.clear();
+                    for (int i = 0; i < (int)titles.size(); i++) {
+                        if (titles[i]->checked) {
+                            ComponentChoice cc;
+                            cc.titleIdx  = i;
+                            cc.wantGame  = true;
+                            cc.wantUpdate = false;
+                            cc.wantDLC    = false;
+                            componentChoices.push_back(cc);
+                        }
+                    }
+                    componentFocusIdx = 0;
+                    componentFocusComponent = 0;
+                    state = AppState::SelectComponents;
+                } else {
+                    state = AppState::ConfirmDelete;
+                }
+            }
         }
 
-        // Minus = open settings
+        if (input.IsPressed(Input::BUTTON_X)) {
+            const char* path = (currentStorage == StorageLocation::USB)
+                               ? CACHE_PATH_USB : CACHE_PATH_NAND;
+            remove(path);
+            titles.clear();
+            selectedIndex      = 0;
+            targetScroll       = 0;
+            scrollAnim         = 0.0f;
+            loadingScreenShown = false;
+            state = AppState::Loading;
+        }
+
         if (input.IsPressed(Input::BUTTON_MINUS)) {
             settingsSelectedItem = 0;
             state = AppState::Settings;
         }
 
-        // L/R = cycle sort mode
         if (input.IsPressed(Input::BUTTON_L) || input.IsPressed(Input::BUTTON_R)) {
             int next = (int)sortMode;
             if (input.IsPressed(Input::BUTTON_R))
@@ -773,14 +984,16 @@ void TitleUninstaller::Update(Input& input) {
                 next = (next - 1 + (int)SortMode::COUNT) % (int)SortMode::COUNT;
             sortMode = (SortMode)next;
             ApplySort();
-            // Jump to top after re-sort
             selectedIndex = 0;
             targetScroll  = 0;
             scrollAnim    = 0.0f;
         }
 
-        // ZL/ZR = switch storage location (USB ↔ NAND)
         if (input.IsPressed(Input::BUTTON_ZL) || input.IsPressed(Input::BUTTON_ZR)) {
+            // Clear component maps, populates on next full scan
+            updateMap.clear();
+            dlcMap.clear();
+
             // Save current list back to its storage slot
             if (currentStorage == StorageLocation::USB)
                 titlesUSB  = std::move(titles);
@@ -790,8 +1003,7 @@ void TitleUninstaller::Update(Input& input) {
             // Switch storage
             currentStorage = (currentStorage == StorageLocation::USB)
                              ? StorageLocation::NAND : StorageLocation::USB;
-
-            // Restore the other list if already loaded, otherwise scan
+            SavePrefs();
             auto& otherList = (currentStorage == StorageLocation::USB)
                               ? titlesUSB : titlesNAND;
 
@@ -824,28 +1036,63 @@ void TitleUninstaller::Update(Input& input) {
         break;
     }
 
-    // Confirm dialog
-    case AppState::ConfirmDelete: {
-        // A = yes, proceed
-        if (input.IsPressed(Input::BUTTON_A)) {
-            StartUninstall();
+    // Component selection dialog
+    case AppState::SelectComponents: {
+        if (componentChoices.empty()) {
+            state = AppState::List;
+            break;
         }
-        // B = cancel, back to list view
+        const int rows = (int)componentChoices.size();
+
+        if (input.IsPressed(Input::BUTTON_UP)) {
+            componentFocusIdx = (componentFocusIdx - 1 + rows) % rows;
+        }
+        if (input.IsPressed(Input::BUTTON_DOWN)) {
+            componentFocusIdx = (componentFocusIdx + 1) % rows;
+        }
+        if (input.IsPressed(Input::BUTTON_LEFT)) {
+            componentFocusComponent = (componentFocusComponent - 1 + 3) % 3;
+        }
+        if (input.IsPressed(Input::BUTTON_RIGHT)) {
+            componentFocusComponent = (componentFocusComponent + 1) % 3;
+        }
+        if (input.IsPressed(Input::BUTTON_A)) {
+            ComponentChoice& cc = componentChoices[componentFocusIdx];
+            uint32_t lowId = (uint32_t)(titles[cc.titleIdx]->titleId & 0xFFFFFFFF);
+            bool hasUpdate = updateMap.count(lowId) > 0;
+            bool hasDLC    = dlcMap.count(lowId) > 0;
+            switch (componentFocusComponent) {
+            case 0: cc.wantGame = !cc.wantGame; break;
+            case 1: if (hasUpdate) cc.wantUpdate = !cc.wantUpdate; break;
+            case 2: if (hasDLC)    cc.wantDLC    = !cc.wantDLC;    break;
+            }
+        }
+        if (input.IsPressed(Input::BUTTON_PLUS)) {
+            state = AppState::ConfirmDelete;
+        }
         if (input.IsPressed(Input::BUTTON_B)) {
+            componentChoices.clear();
             state = AppState::List;
         }
         break;
     }
 
-    // Uninstall commencing
+    case AppState::ConfirmDelete: {
+        if (input.IsPressed(Input::BUTTON_A)) {
+            StartUninstall();
+        }
+        if (input.IsPressed(Input::BUTTON_B)) {
+            state = AppState::List;
+        }
+        break;
+    }
+    
     case AppState::Uninstalling: {
         UninstallNext();
         break;
     }
 
-    // Uninstall Done 
     case AppState::Done: {
-        // A = back to list
         if (input.IsPressed(Input::BUTTON_A)) {
             for (auto& t : titles) t->checked = false;
             selectedIndex      = std::min(selectedIndex, std::max(0, (int)titles.size() - 1));
@@ -856,15 +1103,12 @@ void TitleUninstaller::Update(Input& input) {
         break;
     }
 
-    // Settings Menu
     case AppState::Settings: {
-        // Up/Down to navigate settings items
         if (input.IsPressed(Input::BUTTON_UP))
             settingsSelectedItem = std::max(0, settingsSelectedItem - 1);
         if (input.IsPressed(Input::BUTTON_DOWN))
             settingsSelectedItem = std::min(1, settingsSelectedItem + 1); // 2 items: Theme, (future expansion)
 
-        // A = toggle/select
         if (input.IsPressed(Input::BUTTON_A)) {
             if (settingsSelectedItem == 0) {
                 // Cycle theme
@@ -878,7 +1122,6 @@ void TitleUninstaller::Update(Input& input) {
             }
         }
 
-        // B or Minus = back to list
         if (input.IsPressed(Input::BUTTON_B) || input.IsPressed(Input::BUTTON_MINUS)) {
             state = AppState::List;
         }
@@ -888,20 +1131,15 @@ void TitleUninstaller::Update(Input& input) {
     }
 }
 
-// Theme GFX Drawing
 
 void TitleUninstaller::DrawBackground() {
-    // Warm off-white gradient background
     Gfx::ClearGradient(Gfx::COLOR_BG_TOP(), Gfx::COLOR_BG_BOTTOM());
 }
 
 void TitleUninstaller::DrawTopBar() {
-    // Solid amber top bar
     Gfx::DrawRectFilled(0, 0, Gfx::SCREEN_WIDTH, 120, Gfx::COLOR_BAR_BG());
-    // Subtle bottom shadow line
     Gfx::DrawRectFilled(0, 120, Gfx::SCREEN_WIDTH, 4, Gfx::COLOR_ACCENT_DARK());
 
-    // App title in white
     Gfx::PrintWithShadow(60, 60, 52, Gfx::COLOR_WHITE, "Title Uninstaller",
                          Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
 
@@ -925,10 +1163,9 @@ void TitleUninstaller::DrawTopBar() {
     Gfx::Print(tabX + TAB_W + 8 + TAB_W / 2, 60, 24, nandTxt, "NAND",
                Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_VERTICAL);
 
-    // "ZL/ZR Switch Storage" hint immediately to the right of the NAND tab
     int hintX = tabX + TAB_W + 8 + TAB_W + 20;
-    int iw1 = Gfx::GetIconTextWidth(28, "\xee\x82\x85"); // ZL
-    int iw2 = Gfx::GetIconTextWidth(28, "\xee\x82\x86"); // ZR
+    int iw1 = Gfx::GetIconTextWidth(28, "\xee\x82\x85");
+    int iw2 = Gfx::GetIconTextWidth(28, "\xee\x82\x86");
     int tw  = Gfx::GetTextWidth(22, "Switch");
     constexpr int HINT_GAP = 4;
     Gfx::PrintIcon(hintX, 60, 28, Gfx::COLOR_ACCENT_DARK(),
@@ -938,7 +1175,6 @@ void TitleUninstaller::DrawTopBar() {
     Gfx::Print(hintX + iw1 + 2 + iw2 + HINT_GAP, 60, 22, Gfx::COLOR_WHITE,
                "Switch", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
 
-    // Sort mode pill (top right)
     const char* sortLabel = "A\xe2\x80\x93Z";
     if (sortMode == SortMode::SizeDesc) sortLabel = "Size \xe2\x86\x93";
     if (sortMode == SortMode::SizeAsc)  sortLabel = "Size \xe2\x86\x91";
@@ -948,15 +1184,28 @@ void TitleUninstaller::DrawTopBar() {
     constexpr int PILL_H   = 36;
     int pillX = Gfx::SCREEN_WIDTH - 60 - sw - PILL_PAD;
     int pillY = 60 - PILL_H / 2;
+
+    {
+        int lrIw1 = Gfx::GetIconTextWidth(28, "\xee\x82\x83"); // L
+        int lrIw2 = Gfx::GetIconTextWidth(28, "\xee\x82\x84"); // R
+        int lrTw  = Gfx::GetTextWidth(22, "Sort");
+        int lrTotal = lrIw1 + 2 + lrIw2 + 4 + lrTw;
+        int lrX = pillX - lrTotal - 16;
+        Gfx::PrintIcon(lrX, 60, 28, Gfx::COLOR_ACCENT_DARK(),
+                       "\xee\x82\x83", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+        Gfx::PrintIcon(lrX + lrIw1 + 2, 60, 28, Gfx::COLOR_ACCENT_DARK(),
+                       "\xee\x82\x84", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+        Gfx::Print(lrX + lrIw1 + 2 + lrIw2 + 4, 60, 22, Gfx::COLOR_WHITE,
+                   "Sort", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+    }
+
     Gfx::DrawRectRounded(pillX, pillY, sw + PILL_PAD * 2, PILL_H, 10,
                          Gfx::COLOR_ACCENT_DARK());
-    // Text centred inside the pill
     Gfx::Print(pillX + PILL_PAD + sw / 2, 60, 26, Gfx::COLOR_WHITE,
                sortStr, Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_VERTICAL);
 }
 
 void TitleUninstaller::DrawBottomBar() {
-    // White bottom bar with top border
     Gfx::DrawRectFilled(0, 1000, Gfx::SCREEN_WIDTH, 80, Gfx::COLOR_BAR_BOTTOM());
     Gfx::DrawRectFilled(0, 1000, Gfx::SCREEN_WIDTH, 3, Gfx::COLOR_ACCENT());
 
@@ -965,7 +1214,6 @@ void TitleUninstaller::DrawBottomBar() {
     constexpr int GAP     = 6;
     constexpr int Y       = 1040;
 
-    // Dark text on white bar
     auto drawHint = [&](int x, const char* glyph, const char* label, Gfx::AlignFlags align) {
         int iw = Gfx::GetIconTextWidth(ICON_SZ, glyph);
         int tw = Gfx::GetTextWidth(TXT_SZ, label);
@@ -978,8 +1226,7 @@ void TitleUninstaller::DrawBottomBar() {
         Gfx::Print(sx + iw + GAP, Y, TXT_SZ, Gfx::COLOR_TEXT(), label,
                    Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
     };
-
-    // Far left: Selected count pill (original position)
+    
     int checked = CheckedCount();
     int total   = (int)titles.size();
     char countBuf[64];
@@ -989,24 +1236,19 @@ void TitleUninstaller::DrawBottomBar() {
     Gfx::Print(52, Y, TXT_SZ, Gfx::COLOR_WHITE, countBuf,
                Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
 
-    // Settings hint immediately to the right of the count pill
     int settingsX = 40 + cw2 + 24 + 20;
     drawHint(settingsX, "\xee\x81\x86", "Settings", Gfx::ALIGN_LEFT);
 
-    // Centre: Exit
     drawHint(Gfx::SCREEN_WIDTH / 2, "\xee\x81\x84", "Exit", Gfx::ALIGN_HORIZONTAL);
 
-    // Left of centre: Sort
-    drawHint(Gfx::SCREEN_WIDTH / 2 - 160, "\xee\x82\x83\xee\x82\x84", "Sort",
+    drawHint(Gfx::SCREEN_WIDTH / 2 - 170, "\xee\x80\x82", "Refresh",
              Gfx::ALIGN_RIGHT);
 
-    // Right: action hints
     drawHint(1920 - 40,       "\xee\x80\x80", "Select",          Gfx::ALIGN_RIGHT);
     drawHint(1920 - 40 - 220, "\xee\x80\x83", "All/None",        Gfx::ALIGN_RIGHT);
     drawHint(1920 - 40 - 440, "\xee\x81\x85", "Delete Selected", Gfx::ALIGN_RIGHT);
 }
 
-// List view
 
 void TitleUninstaller::DrawList() {
     if (titles.empty()) {
@@ -1038,16 +1280,13 @@ void TitleUninstaller::DrawList() {
         TitleEntry& t = *titles[idx];
         bool sel = (idx == selectedIndex);
 
-        // Card shadow
         Gfx::DrawRectFilled(x + 3, y + 3, LIST_W - 6, ROW_H - 6,
                             {0x00, 0x00, 0x00, 0x18});
 
-        // Card background
         SDL_Color rowBg = sel ? Gfx::COLOR_ROW_SELECTED()
                               : (t.checked ? Gfx::COLOR_ROW_CHECKED() : Gfx::COLOR_ROW_BG());
         Gfx::DrawRectRounded(x + 2, y + 2, LIST_W - 4, ROW_H - 6, 10, rowBg);
 
-        // Selected: amber border + left accent bar
         if (sel) {
             float pulse = std::sin(selectionPulse) * 0.3f + 0.7f;
             uint8_t alpha = (uint8_t)(180 * pulse + 75);
@@ -1057,7 +1296,6 @@ void TitleUninstaller::DrawList() {
             Gfx::DrawRectFilled(x + 2, y + 2, 6, ROW_H - 6, Gfx::COLOR_ACCENT());
         }
 
-        // Circular checkbox
         int cbX = x + 36;
         int cbY = y + ROW_H / 2;
         int cbR = 14;
@@ -1071,7 +1309,6 @@ void TitleUninstaller::DrawList() {
             Gfx::DrawCircleFilled(cbX, cbY, cbR - 3, rowBg);
         }
 
-        // Icon
         int iconX = cbX + cbR + 20;
         int iconY = y + (ROW_H - ICON_SIZE) / 2;
         if (t.icon) {
@@ -1085,19 +1322,16 @@ void TitleUninstaller::DrawList() {
                        Gfx::COLOR_ACCENT_DARK(), "?", Gfx::ALIGN_CENTER);
         }
 
-        // Title name — dark text
         int textX = iconX + ICON_SIZE + 20;
         Gfx::Print(textX, y + ROW_H / 2, 32, Gfx::COLOR_TEXT(), t.name,
                    Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
 
-        // Size — amber, right-aligned
         std::string sizeStr = FormatSize(t.sizeBytes);
         Gfx::Print(LIST_X + LIST_W - 24, y + ROW_H / 2, 30,
                    Gfx::COLOR_SIZE_TEXT(), sizeStr,
                    Gfx::ALIGN_RIGHT | Gfx::ALIGN_VERTICAL);
     }
 
-    // Scroll indicator — amber thumb
     if ((int)titles.size() > VISIBLE_ROWS) {
         int trackH = VISIBLE_ROWS * ROW_H;
         int trackX = LIST_X + LIST_W + 10;
@@ -1120,24 +1354,20 @@ void TitleUninstaller::DrawStoragePanel() {
     int py = PANEL_Y;
     int pw = PANEL_W;
 
-    // White card with subtle shadow
     Gfx::DrawRectFilled(px + 4, py + 4, pw, 360, {0x00, 0x00, 0x00, 0x18});
     Gfx::DrawRectRounded(px, py, pw, 360, 14, Gfx::COLOR_PANEL_BG());
     Gfx::DrawRectOutline(px, py, pw, 360, Gfx::COLOR_SEPARATOR(), 1);
 
-    // Amber header strip
     Gfx::DrawRectRounded(px, py, pw, 52, 14, Gfx::COLOR_ACCENT());
     Gfx::DrawRectFilled(px, py + 38, pw, 14, Gfx::COLOR_ACCENT()); // square bottom corners
     Gfx::Print(px + 20, py + 26, 26, Gfx::COLOR_WHITE,
                (currentStorage == StorageLocation::USB) ? "USB Storage" : "NAND Storage",
                Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
 
-    // Storage bar
     int barX = px + 20;
     int barY = py + 80;
     int barW = pw - 40;
     int barH = 20;
-    // Rounded bar track
     Gfx::DrawRectRounded(barX, barY, barW, barH, barH / 2, Gfx::COLOR_STORAGE_FREE());
 
     int usedW = 0;
@@ -1150,9 +1380,6 @@ void TitleUninstaller::DrawStoragePanel() {
         Gfx::DrawRectRounded(barX, barY, usedW, barH, barH / 2, Gfx::COLOR_STORAGE_USED());
     }
 
-    // Highlighted game shows a blinking green overlay at the right edge of used
-    // area, representing how much space would be freed by uninstalling it.
-    // highlightBarAnim smoothly tracks the selected game's size fraction.
     if (usbTotalBytes > 0 && highlightBarAnim > 0.001f) {
         int freeW = (int)(highlightBarAnim * barW);
         freeW = std::max(4, std::min(freeW, barW - usedW));
@@ -1162,17 +1389,14 @@ void TitleUninstaller::DrawStoragePanel() {
         Gfx::DrawRectFilled(barX + usedW, barY, freeW, barH, green);
     }
 
-    // Space available
     Gfx::Print(px + 20, barY + barH + 12, 26, Gfx::COLOR_TEXT_DIM(), "Space available",
                Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
     std::string freeStr = (usbFreeBytes > 0) ? FormatSize(usbFreeBytes) : "N/A";
     Gfx::Print(px + pw - 20, barY + barH + 12, 26, Gfx::COLOR_TEXT(), freeStr,
                Gfx::ALIGN_RIGHT | Gfx::ALIGN_TOP);
 
-    // Separator
     Gfx::DrawRectFilled(px + 20, py + 150, pw - 40, 1, Gfx::COLOR_SEPARATOR());
 
-    // Selection summary
     int checked = CheckedCount();
     uint64_t selBytes = CheckedBytes();
 
@@ -1211,11 +1435,9 @@ void TitleUninstaller::DrawConfirmDialog() {
     int dx = (Gfx::SCREEN_WIDTH  - dw) / 2;
     int dy = (Gfx::SCREEN_HEIGHT - dh) / 2;
 
-    // White card with shadow
     Gfx::DrawRectFilled(dx + 5, dy + 5, dw, dh, {0x00, 0x00, 0x00, 0x30});
     Gfx::DrawRectRounded(dx, dy, dw, dh, 20, Gfx::COLOR_PANEL_BG());
 
-    // Amber header strip
     Gfx::DrawRectRounded(dx, dy, dw, 60, 20, Gfx::COLOR_DANGER());
     Gfx::DrawRectFilled(dx, dy + 40, dw, 20, Gfx::COLOR_DANGER());
     Gfx::Print(dx + dw / 2, dy + 30, 36, Gfx::COLOR_WHITE,
@@ -1239,7 +1461,6 @@ void TitleUninstaller::DrawConfirmDialog() {
     constexpr int TXT_SZ  = 26;
     constexpr int GAP     = 6;
 
-    // A = Confirm (red button)
     Gfx::DrawRectRounded(dx + 80, btnY, 280, 52, 12, Gfx::COLOR_DANGER());
     {
         int iw = Gfx::GetIconTextWidth(ICON_SZ, "\xee\x80\x80");
@@ -1252,7 +1473,6 @@ void TitleUninstaller::DrawConfirmDialog() {
                    "Confirm", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
     }
 
-    // B = Cancel (grey button)
     Gfx::DrawRectRounded(dx + dw - 360, btnY, 280, 52, 12, Gfx::COLOR_SEPARATOR());
     {
         int iw = Gfx::GetIconTextWidth(ICON_SZ, "\xee\x80\x81");
@@ -1266,6 +1486,153 @@ void TitleUninstaller::DrawConfirmDialog() {
     }
 }
 
+// Component selection dialog
+
+void TitleUninstaller::DrawComponentSelectDialog() {
+    Gfx::DrawRectFilled(0, 0, Gfx::SCREEN_WIDTH, Gfx::SCREEN_HEIGHT, {0x00, 0x00, 0x00, 0xb0});
+
+    int dw = 1000, dh = 520;
+    int dx = (Gfx::SCREEN_WIDTH  - dw) / 2;
+    int dy = (Gfx::SCREEN_HEIGHT - dh) / 2;
+
+    // Card with shadow
+    Gfx::DrawRectFilled(dx + 5, dy + 5, dw, dh, {0x00, 0x00, 0x00, 0x30});
+    Gfx::DrawRectRounded(dx, dy, dw, dh, 20, Gfx::COLOR_PANEL_BG());
+
+    // Header
+    Gfx::DrawRectRounded(dx, dy, dw, 60, 20, Gfx::COLOR_ACCENT());
+    Gfx::DrawRectFilled(dx, dy + 40, dw, 20, Gfx::COLOR_ACCENT());
+    Gfx::Print(dx + dw / 2, dy + 30, 32, Gfx::COLOR_WHITE,
+               "Select Components to Delete", Gfx::ALIGN_CENTER | Gfx::ALIGN_VERTICAL);
+
+    // Column headers
+    int hdrY = dy + 80;
+    int rowH = 60;
+    int nameX = dx + 40;
+    int gameX = dx + 560;
+    int updX  = dx + 680;
+    int dlcX  = dx + 800;
+
+    Gfx::Print(nameX, hdrY, 22, Gfx::COLOR_TEXT_DIM(), "Game Title", Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
+    Gfx::Print(gameX, hdrY, 22, Gfx::COLOR_TEXT_DIM(), "Game",  Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_TOP);
+    Gfx::Print(updX,  hdrY, 22, Gfx::COLOR_TEXT_DIM(), "Update",Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_TOP);
+    Gfx::Print(dlcX,  hdrY, 22, Gfx::COLOR_TEXT_DIM(), "DLC",   Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_TOP);
+
+    // Separator
+    Gfx::DrawRectFilled(dx + 20, hdrY + 26, dw - 40, 1, Gfx::COLOR_SEPARATOR());
+
+    int listY = hdrY + 32;
+
+    for (int i = 0; i < (int)componentChoices.size(); i++) {
+        int y = listY + i * rowH;
+        if (y + rowH > dy + dh - 80) break;
+
+        bool focused = (i == componentFocusIdx);
+        const ComponentChoice& cc = componentChoices[i];
+        TitleEntry& t = *titles[cc.titleIdx];
+        uint32_t lowId = (uint32_t)(t.titleId & 0xFFFFFFFF);
+        bool hasUpdate = updateMap.count(lowId) > 0;
+        bool hasDLC    = dlcMap.count(lowId) > 0;
+
+        SDL_Color bg = focused ? Gfx::COLOR_ROW_SELECTED() : Gfx::COLOR_ROW_BG();
+        Gfx::DrawRectRounded(dx + 15, y, dw - 30, rowH - 4, 8, bg);
+        if (focused) {
+            Gfx::DrawRectFilled(dx + 15, y, 4, rowH - 4, Gfx::COLOR_ACCENT());
+        }
+
+        // Game name
+        Gfx::Print(nameX + 10, y + (rowH - 4) / 2, 26, Gfx::COLOR_TEXT(), t.name,
+                   Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+
+        // Checkboxes for Game / Update / DLC
+        auto drawCB = [&](int cx, bool checked, bool enabled, int compIdx) {
+            bool compFocused = focused && (compIdx == componentFocusComponent);
+            int cbR = 12;
+            SDL_Color col;
+            if (enabled) {
+                col = checked ? Gfx::COLOR_ACCENT()
+                     : (compFocused ? Gfx::COLOR_ACCENT_LIGHT() : Gfx::COLOR_SEPARATOR());
+            } else {
+                col = {0x80, 0x80, 0x80, 0x60};
+            }
+            int cy = y + (rowH - 4) / 2;
+            if (checked) {
+                Gfx::DrawCircleFilled(cx, cy, cbR, col);
+                Gfx::DrawCircleFilled(cx, cy, cbR - 4, Gfx::COLOR_WHITE);
+            } else {
+                Gfx::DrawCircleFilled(cx, cy, cbR, col);
+                if (!enabled && compFocused) {
+                    Gfx::Print(cx, cy + cbR + 8, 16, {0x80, 0x80, 0x80, 0xff},
+                               "N/A", Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_TOP);
+                }
+            }
+        };
+
+        drawCB(gameX, cc.wantGame, true, 0);
+        drawCB(updX,  cc.wantUpdate, hasUpdate, 1);
+        drawCB(dlcX,  cc.wantDLC,    hasDLC,    2);
+
+        // Size label
+        std::string sizeStr = FormatSize(t.sizeBytes);
+        int sizX = gameX - 20;
+        int sizW = Gfx::GetTextWidth(18, sizeStr);
+        Gfx::Print(sizX - sizW, y + (rowH - 4) / 2 + 14, 18, Gfx::COLOR_TEXT_DIM(),
+                   sizeStr, Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
+
+        if (hasUpdate) {
+            auto& ue = *updateMap[lowId];
+            std::string us = FormatSize(ue.sizeBytes);
+            int usW = Gfx::GetTextWidth(18, us);
+            Gfx::Print(updX - usW, y + (rowH - 4) / 2 + 14, 18, Gfx::COLOR_TEXT_DIM(),
+                       us, Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
+        }
+        if (hasDLC) {
+            auto& de = *dlcMap[lowId];
+            std::string ds = FormatSize(de.sizeBytes);
+            int dsW = Gfx::GetTextWidth(18, ds);
+            Gfx::Print(dlcX - dsW, y + (rowH - 4) / 2 + 14, 18, Gfx::COLOR_TEXT_DIM(),
+                       ds, Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
+        }
+    }
+
+    // Footer buttons
+    int btnY = dy + dh - 70;
+    constexpr int ICON_SZ = 30;
+    constexpr int TXT_SZ  = 26;
+    constexpr int GAP     = 6;
+
+    // + = Delete
+    Gfx::DrawRectRounded(dx + 80, btnY, 280, 52, 12, Gfx::COLOR_DANGER());
+    {
+        int iw = Gfx::GetIconTextWidth(ICON_SZ, "\xee\x81\x85");
+        int tw = Gfx::GetTextWidth(TXT_SZ, "Delete");
+        int total = iw + GAP + tw;
+        int sx = dx + 80 + 140 - total / 2;
+        Gfx::PrintIcon(sx, btnY + 26, ICON_SZ, Gfx::COLOR_WHITE,
+                       "\xee\x81\x85", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+        Gfx::Print(sx + iw + GAP, btnY + 26, TXT_SZ, Gfx::COLOR_WHITE,
+                   "Delete", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+    }
+
+    // B = Cancel
+    Gfx::DrawRectRounded(dx + dw - 360, btnY, 280, 52, 12, Gfx::COLOR_SEPARATOR());
+    {
+        int iw = Gfx::GetIconTextWidth(ICON_SZ, "\xee\x80\x81");
+        int tw = Gfx::GetTextWidth(TXT_SZ, "Cancel");
+        int total = iw + GAP + tw;
+        int sx = dx + dw - 360 + 140 - total / 2;
+        Gfx::PrintIcon(sx, btnY + 26, ICON_SZ, Gfx::COLOR_TEXT(),
+                       "\xee\x80\x81", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+        Gfx::Print(sx + iw + GAP, btnY + 26, TXT_SZ, Gfx::COLOR_TEXT(),
+                   "Cancel", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+    }
+
+    // Hint text
+    Gfx::Print(dx + dw / 2, btnY - 22, 20, Gfx::COLOR_TEXT_DIM(),
+               "\xee\x81\xbe Left/Right: navigate column   \xee\x80\x80 A: toggle   \xee\x81\xbd Up/Down: navigate row",
+               Gfx::ALIGN_CENTER | Gfx::ALIGN_TOP);
+}
+
 // Uninstall progress screen
 
 void TitleUninstaller::DrawUninstallProgress() {
@@ -1275,18 +1642,15 @@ void TitleUninstaller::DrawUninstallProgress() {
     int total   = (int)uninstallQueue.size();
     int current = std::min(uninstallCurrent, total);
 
-    // White card
     Gfx::DrawRectFilled(203, 383, 1520, 314, {0x00, 0x00, 0x00, 0x18});
     Gfx::DrawRectRounded(200, 380, 1520, 314, 16, Gfx::COLOR_PANEL_BG());
 
     // Current title name
     if (uninstallCurrent < total) {
-        int idx = uninstallQueue[uninstallCurrent];
         Gfx::Print(960, 430, 34, Gfx::COLOR_TEXT(),
-                   "Uninstalling: " + titles[idx]->name, Gfx::ALIGN_CENTER);
+                   "Uninstalling: " + uninstallQueue[uninstallCurrent].name, Gfx::ALIGN_CENTER);
     }
 
-    // Rounded progress bar
     int barX = 260, barY = 490, barW = 1400, barH = 24;
     Gfx::DrawRectRounded(barX, barY, barW, barH, barH / 2, Gfx::COLOR_STORAGE_FREE());
     if (total > 0) {
@@ -1314,11 +1678,9 @@ void TitleUninstaller::DrawDoneScreen() {
     DrawBackground();
     DrawTopBar();
 
-    // White card with shadow
     Gfx::DrawRectFilled(363, 283, 1200, 420, {0x00, 0x00, 0x00, 0x18});
     Gfx::DrawRectRounded(360, 280, 1200, 420, 20, Gfx::COLOR_PANEL_BG());
 
-    // Amber header strip
     Gfx::DrawRectRounded(360, 280, 1200, 60, 20, Gfx::COLOR_ACCENT());
     Gfx::DrawRectFilled(360, 320, 1200, 20, Gfx::COLOR_ACCENT());
     Gfx::Print(960, 310, 36, Gfx::COLOR_WHITE, "Uninstall Complete",
@@ -1370,7 +1732,6 @@ void TitleUninstaller::DrawLoadingScreen() {
     DrawBackground();
     DrawTopBar();
 
-    // Amber pulsing card
     float pulse = std::sin(Gfx::GetTicks() / 400.0f) * 0.15f + 0.85f;
     SDL_Color cardColor = {
         (uint8_t)(Gfx::COLOR_ACCENT().r * pulse),
@@ -1394,17 +1755,14 @@ void TitleUninstaller::DrawLoadingScreen() {
 void TitleUninstaller::DrawSettingsScreen() {
     DrawBackground();
 
-    // Top bar — same amber bar, subtitle shows "Settings"
     Gfx::DrawRectFilled(0, 0, Gfx::SCREEN_WIDTH, 120, Gfx::COLOR_BAR_BG());
     Gfx::DrawRectFilled(0, 120, Gfx::SCREEN_WIDTH, 4, Gfx::COLOR_ACCENT_DARK());
     Gfx::PrintWithShadow(60, 60, 52, Gfx::COLOR_WHITE, "Title Uninstaller",
                          Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
-    // Subtitle
     int titleW = Gfx::GetTextWidth(52, "Title Uninstaller");
     Gfx::Print(60 + titleW + 24, 60, 28, Gfx::COLOR_ACCENT_DARK(), "/ Settings",
                Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
 
-    // Card (no header strip — title is in the top bar)
     int cw = 860, ch = 360;
     int cx = (Gfx::SCREEN_WIDTH  - cw) / 2;
     int cy = (Gfx::SCREEN_HEIGHT - ch) / 2;
@@ -1413,7 +1771,6 @@ void TitleUninstaller::DrawSettingsScreen() {
     Gfx::DrawRectRounded(cx, cy, cw, ch, 20, Gfx::COLOR_PANEL_BG());
     Gfx::DrawRectOutline(cx, cy, cw, ch, Gfx::COLOR_SEPARATOR(), 1);
 
-    // Theme row
     constexpr int ROW_Y1  = 40;
     constexpr int ROW_H_S = 90;
 
@@ -1442,7 +1799,6 @@ void TitleUninstaller::DrawSettingsScreen() {
     const char* themeLabel = (themeMode == ThemeMode::Dark) ? "Dark" : "Light";
     drawSettingRow(ROW_Y1, 0, "Theme", themeLabel);
 
-    // In-card hints
     {
         constexpr int HINT_SZ = 26, HINT_ICON = 28, HINT_GAP = 5;
         int hy = cy + ROW_Y1 + ROW_H_S + 50;
@@ -1506,6 +1862,15 @@ void TitleUninstaller::Draw() {
         DrawStoragePanel();
         DrawBottomBar();
         DrawConfirmDialog();
+        break;
+
+    case AppState::SelectComponents:
+        DrawBackground();
+        DrawTopBar();
+        DrawList();
+        DrawStoragePanel();
+        DrawBottomBar();
+        DrawComponentSelectDialog();
         break;
 
     case AppState::Uninstalling:

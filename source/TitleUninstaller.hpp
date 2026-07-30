@@ -5,14 +5,16 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <map>
 #include <coreinit/mcp.h>
 
 // Title entry
 
 enum class TitleKind {
-    Game,   // 0x00050000
-    Update, // 0x0005000E
-    DLC,    // 0x0005000C
+    Game,       // 0x00050000
+    GameVC,     // 0x00050002
+    Update,     // 0x0005000E
+    DLC,        // 0x0005000C
 };
 
 struct TitleEntry {
@@ -32,12 +34,26 @@ struct TitleEntry {
     ~TitleEntry();
 };
 
+struct ComponentChoice {
+    int  titleIdx;
+    bool wantGame;
+    bool wantUpdate;
+    bool wantDLC;
+};
+
+struct UninstallJob {
+    std::string path;
+    std::string name;
+    int  removeIdx;
+};
+
 // state machine
 
 enum class AppState {
     Loading,
     List,
     ConfirmDelete,
+    SelectComponents,
     Uninstalling,
     Done,
     Settings,
@@ -58,6 +74,7 @@ public:
 private:
     void LoadTitles();
     void LoadTitleMetadata(TitleEntry& t);
+    void ScanComponents();
     void QueryUSBStorage();
     void QueryStorage();
     void SaveTitleCache();
@@ -76,6 +93,7 @@ private:
     void DrawList();
     void DrawStoragePanel();
     void DrawConfirmDialog();
+    void DrawComponentSelectDialog();
     void DrawUninstallProgress();
     void DrawDoneScreen();
     void DrawLoadingScreen();
@@ -102,13 +120,20 @@ private:
     std::vector<std::unique_ptr<TitleEntry>> titlesUSB;
     std::vector<std::unique_ptr<TitleEntry>> titlesNAND;
 
+    // Update and DLC maps — keyed by low 32 bits of titleId for component selection
+    std::map<uint32_t, std::unique_ptr<TitleEntry>> updateMap;
+    std::map<uint32_t, std::unique_ptr<TitleEntry>> dlcMap;
+
     // Theme
     enum class ThemeMode { Dark, Light, COUNT };
     ThemeMode themeMode;
     int settingsSelectedItem;
 
     // Uninstall
-    std::vector<int> uninstallQueue;
+    std::vector<UninstallJob> uninstallQueue;
+    std::vector<ComponentChoice> componentChoices;
+    int componentFocusIdx;
+    int componentFocusComponent;
     int  uninstallCurrent;
     int  uninstallSucceeded;
     int  uninstallFailed;
