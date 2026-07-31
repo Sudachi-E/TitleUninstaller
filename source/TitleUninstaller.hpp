@@ -1,5 +1,6 @@
 #pragma once
 
+#include "TitleDefs.hpp"
 #include <SDL.h>
 #include <SDL_image.h>
 #include <string>
@@ -7,8 +8,6 @@
 #include <memory>
 #include <map>
 #include <coreinit/mcp.h>
-
-// Title entry
 
 enum class TitleKind {
     Game,       // 0x00050000
@@ -19,8 +18,8 @@ enum class TitleKind {
 
 struct TitleEntry {
     std::string  name;
-    std::string  path;       // /vol/ path from MCP
-    std::string  iconPath;   // fs:/ path for icon loading
+    std::string  path;
+    std::string  iconPath;
     SDL_Texture* icon;
     uint64_t     titleId;
     TitleKind    kind;
@@ -47,8 +46,6 @@ struct UninstallJob {
     int  removeIdx;
 };
 
-// state machine
-
 enum class AppState {
     Loading,
     List,
@@ -59,8 +56,6 @@ enum class AppState {
     Settings,
 };
 
-// Main class
-
 class TitleUninstaller {
 public:
     TitleUninstaller();
@@ -69,16 +64,15 @@ public:
     void Update(class Input& input);
     void Draw();
 
-    void StopIconThread();
-
 private:
     void LoadTitles();
     void LoadTitleMetadata(TitleEntry& t);
     void ScanComponents();
-    void QueryUSBStorage();
+    void LoadCheckedComponentMetadata();
     void QueryStorage();
     void SaveTitleCache();
     bool LoadTitleCache();
+
     void SavePrefs();
     void LoadPrefs();
 
@@ -86,6 +80,14 @@ private:
 
     void StartUninstall();
     bool UninstallNext();
+
+    void UpdateList(Input& input, float dt);
+    void UpdateSelectComponents(Input& input);
+    void UpdateConfirmDelete(Input& input);
+    void UpdateUninstalling(Input&);
+    void UpdateDone(Input& input);
+    void UpdateSettings(Input& input);
+    void SwitchStorage();
 
     void DrawBackground();
     void DrawTopBar();
@@ -116,20 +118,17 @@ private:
     enum class StorageLocation { USB, NAND };
     StorageLocation currentStorage;
 
-    // Title lists per storage — both kept in memory so switching is instant
+    // Title lists per storage, both kept in memory so switching is instant
     std::vector<std::unique_ptr<TitleEntry>> titlesUSB;
     std::vector<std::unique_ptr<TitleEntry>> titlesNAND;
 
-    // Update and DLC maps — keyed by low 32 bits of titleId for component selection
     std::map<uint32_t, std::unique_ptr<TitleEntry>> updateMap;
     std::map<uint32_t, std::unique_ptr<TitleEntry>> dlcMap;
 
-    // Theme
     enum class ThemeMode { Dark, Light, COUNT };
     ThemeMode themeMode;
     int settingsSelectedItem;
 
-    // Uninstall
     std::vector<UninstallJob> uninstallQueue;
     std::vector<ComponentChoice> componentChoices;
     int componentFocusIdx;
@@ -143,22 +142,18 @@ private:
     int32_t mcpHandle;
     MCPInstallTitleInfo mcpTitleInfo;
 
-    // Storage info
-    uint64_t usbTotalBytes;
-    uint64_t usbFreeBytes;
+    uint64_t storageTotalBytes;
+    uint64_t storageFreeBytes;
 
-    // Animation
     uint32_t lastTick;
     float    selectionPulse;
     float    scrollAnim;
     int      targetScroll;
-    float    highlightBarAnim; // smoothly animated width of the green bar (0-1 fraction of barWidth)
+    float    highlightBarAnim;
 
-    // D-pad hold-repeat state
-    float    holdTimer;       // seconds the current direction has been held
-    float    repeatAccum;     // accumulator for repeat firing
+    float    holdTimer;
+    float    repeatAccum;
 
-    // Layout constants
     static constexpr int LIST_X       = 60;
     static constexpr int LIST_Y       = 130;
     static constexpr int LIST_W       = 1300;

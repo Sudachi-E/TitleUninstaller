@@ -14,11 +14,6 @@
 #include <nsysnet/netconfig.h>
 #include <sndcore2/core.h>
 
-#define LOG(fmt, ...) do { \
-    OSReport("[UNINSTALLER] " fmt "\n", ##__VA_ARGS__); \
-    WHBLogPrintf("[UNINSTALLER] " fmt, ##__VA_ARGS__); \
-} while(0)
-
 int main(int argc, char const* argv[]) {
     WHBProcInit();
     WHBLogUdpInit();
@@ -79,7 +74,6 @@ int main(int argc, char const* argv[]) {
         }
 
         LOG("Main loop exited — ProcUI signalled exit");
-        app.StopIconThread();
     }
 
     LOG("Calling Gfx::Shutdown");
