@@ -19,7 +19,7 @@ TitleUninstaller::TitleUninstaller()
       selectedIndex(0), loadingScreenShown(false),
       sortMode(SortMode::Alphabetical),
       currentStorage(StorageLocation::USB),
-      themeMode(ThemeMode::Dark), settingsSelectedItem(0),
+      themeMode(ThemeMode::Dark), settingsSelectedItem(0), keepAwake(false),
       uninstallCurrent(0), uninstallSucceeded(0), uninstallFailed(0),
       uninstallInProgress(false), uninstallSeenActive(false), uninstallPollFrames(0), mcpHandle(-1),
       storageTotalBytes(0), storageFreeBytes(0),
@@ -58,6 +58,10 @@ TitleUninstaller::TitleUninstaller()
 
 TitleUninstaller::~TitleUninstaller() {
     OSReport("[EXIT] ~TitleUninstaller begin\n");
+    if (keepAwake) {
+        IMEnableAPD();
+        IMEnableDim();
+    }
     OSReport("[EXIT] Closing MCP handle=%d\n", mcpHandle);
     if (mcpHandle >= 0) { MCP_Close(mcpHandle); mcpHandle = -1; }
     OSReport("[EXIT] MCP_Close done\n");
@@ -74,6 +78,7 @@ void TitleUninstaller::SavePrefs() {
     if (!f) return;
     fprintf(f, "theme=%d\n", (int)themeMode);
     fprintf(f, "storage=%d\n", (int)currentStorage);
+    fprintf(f, "keepAwake=%d\n", keepAwake ? 1 : 0);
     fclose(f);
 }
 
@@ -93,6 +98,13 @@ void TitleUninstaller::LoadPrefs() {
         if (sscanf(line, "storage=%d", &val) == 1) {
             currentStorage = (val == (int)StorageLocation::NAND)
                              ? StorageLocation::NAND : StorageLocation::USB;
+        }
+        if (sscanf(line, "keepAwake=%d", &val) == 1) {
+            keepAwake = (val == 1);
+            if (keepAwake) {
+                IMDisableAPD();
+                IMDisableDim();
+            }
         }
     }
     fclose(f);
@@ -415,6 +427,16 @@ void TitleUninstaller::UpdateSettings(Input& input) {
                 Gfx::SetTheme(Gfx::MakeDarkTheme());
             else
                 Gfx::SetTheme(Gfx::MakeLightTheme());
+            SavePrefs();
+        } else if (settingsSelectedItem == 1) {
+            keepAwake = !keepAwake;
+            if (keepAwake) {
+                IMDisableAPD();
+                IMDisableDim();
+            } else {
+                IMEnableAPD();
+                IMEnableDim();
+            }
             SavePrefs();
         }
     }

@@ -8,6 +8,7 @@
 #include <memory>
 #include <map>
 #include <coreinit/mcp.h>
+#include <coreinit/energysaver.h>
 
 enum class TitleKind {
     Game,       // 0x00050000
@@ -128,6 +129,7 @@ private:
     enum class ThemeMode { Dark, Light, COUNT };
     ThemeMode themeMode;
     int settingsSelectedItem;
+    bool keepAwake;
 
     std::vector<UninstallJob> uninstallQueue;
     std::vector<ComponentChoice> componentChoices;

@@ -678,7 +678,7 @@ void TitleUninstaller::DrawSettingsScreen() {
     DrawBackground();
     DrawAppHeader("/ Settings");
 
-    int cw = 860, ch = 360;
+    int cw = 860, ch = 460;
     int cx = (Gfx::SCREEN_WIDTH  - cw) / 2;
     int cy = (Gfx::SCREEN_HEIGHT - ch) / 2;
 
@@ -710,9 +710,13 @@ void TitleUninstaller::DrawSettingsScreen() {
     const char* themeLabel = (themeMode == ThemeMode::Dark) ? "Dark" : "Light";
     drawSettingRow(ROW_Y1, 0, "Theme", themeLabel);
 
+    constexpr int ROW_Y2 = ROW_Y1 + ROW_H_S + 10;
+    const char* keepAwakeLabel = keepAwake ? "On" : "Off";
+    drawSettingRow(ROW_Y2, 1, "Keep Screen On", keepAwakeLabel);
+
     {
         constexpr int HINT_SZ = 26, HINT_ICON = 28, HINT_GAP = 5;
-        int hy = cy + ROW_Y1 + ROW_H_S + 50;
+        int hy = cy + ROW_Y2 + ROW_H_S + 30;
         int iw1 = Gfx::GetIconTextWidth(HINT_ICON, "\xee\x80\x80");
         int tw1 = Gfx::GetTextWidth(HINT_SZ, "Change");
         int iw2 = Gfx::GetIconTextWidth(HINT_ICON, "\xee\x80\x81");
