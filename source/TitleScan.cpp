@@ -8,9 +8,10 @@
 #include <sys/stat.h>
 #include <malloc.h>
 #include <algorithm>
-#include <cstring>
 #include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <set>
 
 static std::string VolPathToFsPath(const std::string& volPath) {
@@ -23,6 +24,43 @@ static std::string VolPathToFsPath(const std::string& volPath) {
         }
     }
     return volPath;
+}
+
+static uint64_t ReadTmdContentSize(const std::string& tmdPath) {
+    FILE* f = fopen(tmdPath.c_str(), "rb");
+    if (!f) return 0;
+
+    uint64_t total = 0;
+    if (fseek(f, 0, SEEK_END) == 0) {
+        long fileSize = ftell(f);
+        if (fileSize >= 0x1E4 + 0x30) {
+            std::vector<uint8_t> hdr(0x1E4);
+            fseek(f, 0, SEEK_SET);
+            if (fread(hdr.data(), 1, hdr.size(), f) == hdr.size()) {
+                uint8_t  version     = hdr[0x180];
+                uint16_t numContents = 0;
+                memcpy(&numContents, &hdr[0x1DE], sizeof(numContents));
+
+                uint32_t contentsOff = (version == 1) ? 0x0B04 : 0x1E4;
+                size_t   recBytes    = (size_t)numContents * 0x30;
+
+                if (numContents > 0 && numContents <= 0x1000 &&
+                    (uint64_t)contentsOff + recBytes <= (uint64_t)fileSize) {
+                    std::vector<uint8_t> buf(recBytes);
+                    fseek(f, contentsOff, SEEK_SET);
+                    if (fread(buf.data(), 1, buf.size(), f) == buf.size()) {
+                        for (size_t i = 0; i < (size_t)numContents; i++) {
+                            uint64_t sz;
+                            memcpy(&sz, &buf[i * 0x30 + 0x08], sizeof(sz));
+                            total += sz;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    fclose(f);
+    return total;
 }
 
 // Returns the number of base-game titles on the given storage device.
@@ -77,7 +115,7 @@ void TitleUninstaller::SaveTitleCache() {
             MCP_Close(h);
         }
     }
-    fprintf(f, "#count=%d\n", rawCount);
+    fprintf(f, "#count=%d;v=7\n", rawCount);
 
     for (const auto& t : titles) {
         std::string safeName = t->name;
@@ -99,7 +137,8 @@ bool TitleUninstaller::LoadTitleCache() {
     if (!fgets(header, sizeof(header), f)) { fclose(f); return false; }
 
     int cachedCount = 0;
-    if (sscanf(header, "#count=%d", &cachedCount) != 1) {
+    int ver = 0;
+    if (sscanf(header, "#count=%d;v=%d", &cachedCount, &ver) != 2 || ver != 7) {
         fclose(f);
         remove(path);
         return false;
@@ -173,6 +212,48 @@ bool TitleUninstaller::LoadTitleCache() {
 void TitleUninstaller::LoadTitleMetadata(TitleEntry& t) {
     std::string base = VolPathToFsPath(t.path);
 
+    {
+        std::string xmlPath = base + "/meta/meta.xml";
+        FILE* f = fopen(xmlPath.c_str(), "r");
+        if (f) {
+            char line[512];
+            while (fgets(line, sizeof(line), f)) {
+                if (t.sizeBytes == 0) {
+                    const char* tag = strstr(line, "app_size");
+                    if (tag) {
+                        const char* s = strchr(tag, '>');
+                        const char* e = s ? strchr(s + 1, '<') : nullptr;
+                        if (s && e && e > s + 1) {
+                            const char* vp = s + 1;
+                            while (*vp == ' ' || *vp == '\t') vp++;
+                            if (vp[0] == '0' && (vp[1] == 'x' || vp[1] == 'X')) vp += 2;
+                            char* end = nullptr;
+                            unsigned long long sz = strtoull(vp, &end, 16);
+                            if (end != vp && sz > 0)
+                                t.sizeBytes = (uint64_t)sz;
+                        }
+                    }
+                }
+                if (t.name.empty()) {
+                    const char* tag = strstr(line, "shortname_en");
+                    if (tag) {
+                        const char* s = strchr(tag, '>');
+                        const char* e = s ? strchr(s + 1, '<') : nullptr;
+                        if (s && e && e > s + 1) {
+                            std::string candidate(s + 1, e - s - 1);
+                            while (!candidate.empty() &&
+                                   (candidate.back() == '\n' || candidate.back() == '\r' || candidate.back() == ' '))
+                                candidate.pop_back();
+                            if (!candidate.empty()) t.name = candidate;
+                        }
+                    }
+                }
+                if (t.sizeBytes != 0 && !t.name.empty()) break;
+            }
+            fclose(f);
+        }
+    }
+
     ACPMetaXml* meta = static_cast<ACPMetaXml*>(memalign(0x40, sizeof(ACPMetaXml)));
     if (meta) {
         memset(meta, 0, sizeof(ACPMetaXml));
@@ -183,6 +264,12 @@ void TitleUninstaller::LoadTitleMetadata(TitleEntry& t) {
                 t.sizeBytes = meta->app_size;
         }
         free(meta);
+    }
+
+    if (t.sizeBytes == 0) {
+        t.sizeBytes = ReadTmdContentSize(base + "/code/title.tmd");
+        if (t.sizeBytes == 0)
+            t.sizeBytes = ReadTmdContentSize(base + "/meta/title.tmd");
     }
 
     if (t.sizeBytes == 0) {
@@ -205,29 +292,6 @@ void TitleUninstaller::LoadTitleMetadata(TitleEntry& t) {
         t.sizeBytes  = sumDir(base + "/content");
         t.sizeBytes += sumDir(base + "/code");
         t.sizeBytes += sumDir(base + "/meta");
-    }
-
-    if (t.name.empty()) {
-        std::string xmlPath = base + "/meta/meta.xml";
-        FILE* f = fopen(xmlPath.c_str(), "r");
-        if (f) {
-            char line[512];
-            while (fgets(line, sizeof(line), f)) {
-                const char* tag = strstr(line, "shortname_en");
-                if (tag) {
-                    const char* s = strchr(tag, '>');
-                    const char* e = s ? strchr(s + 1, '<') : nullptr;
-                    if (s && e && e > s + 1) {
-                        std::string candidate(s + 1, e - s - 1);
-                        while (!candidate.empty() &&
-                               (candidate.back() == '\n' || candidate.back() == '\r' || candidate.back() == ' '))
-                            candidate.pop_back();
-                        if (!candidate.empty()) { t.name = candidate; break; }
-                    }
-                }
-            }
-            fclose(f);
-        }
     }
 
     if (t.name.empty()) {
