@@ -453,39 +453,103 @@ void TitleUninstaller::DrawConfirmDialog() {
 }
 
 void TitleUninstaller::DrawComponentSelectDialog() {
-    Gfx::DrawRectFilled(0, 0, Gfx::SCREEN_WIDTH, Gfx::SCREEN_HEIGHT, {0x00, 0x00, 0x00, 0xb0});
+    Gfx::DrawRectFilled(0, 0, Gfx::SCREEN_WIDTH, Gfx::SCREEN_HEIGHT, {0x00, 0x00, 0x00, 0xb8});
 
-    int dw = 1000, dh = 520;
-    int dx = (Gfx::SCREEN_WIDTH  - dw) / 2;
-    int dy = (Gfx::SCREEN_HEIGHT - dh) / 2;
+    constexpr int DW        = 1360;
+    constexpr int HEADER_H  = 64;
+    constexpr int FOOTER_H  = 90;
+    constexpr int COL_HDR_H = 40;
+    constexpr int ROW_H     = 92;
+    constexpr int ROW_PAD   = 6;
+    constexpr int MAX_ROWS  = 6;
 
-    Gfx::DrawRectFilled(dx + 5, dy + 5, dw, dh, {0x00, 0x00, 0x00, 0x30});
-    Gfx::DrawRectRounded(dx, dy, dw, dh, 20, Gfx::COLOR_PANEL_BG());
+    int numRows  = (int)componentChoices.size();
+    int visRows  = std::min(numRows, MAX_ROWS);
+    int DH       = HEADER_H + COL_HDR_H + visRows * (ROW_H + ROW_PAD) + ROW_PAD + FOOTER_H + 8;
 
-    Gfx::DrawRectRounded(dx, dy, dw, 60, 20, Gfx::COLOR_ACCENT());
-    Gfx::DrawRectFilled(dx, dy + 40, dw, 20, Gfx::COLOR_ACCENT());
-    Gfx::Print(dx + dw / 2, dy + 30, 32, Gfx::COLOR_WHITE,
-               "Select Components to Delete", Gfx::ALIGN_CENTER | Gfx::ALIGN_VERTICAL);
+    int dx = (Gfx::SCREEN_WIDTH  - DW) / 2;
+    int dy = (Gfx::SCREEN_HEIGHT - DH) / 2;
 
-    int hdrY = dy + 80;
-    int rowH = 60;
-    int nameX = dx + 40;
-    int gameX = dx + 560;
-    int updX  = dx + 680;
-    int dlcX  = dx + 800;
+    Gfx::DrawRectFilled(dx + 6, dy + 6, DW, DH, {0x00, 0x00, 0x00, 0x38});
+    Gfx::DrawRectRounded(dx, dy, DW, DH, 20, Gfx::COLOR_PANEL_BG());
 
-    Gfx::Print(nameX, hdrY, 22, Gfx::COLOR_TEXT_DIM(), "Game Title", Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
-    Gfx::Print(gameX, hdrY, 22, Gfx::COLOR_TEXT_DIM(), "Game",  Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_TOP);
-    Gfx::Print(updX,  hdrY, 22, Gfx::COLOR_TEXT_DIM(), "Update",Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_TOP);
-    Gfx::Print(dlcX,  hdrY, 22, Gfx::COLOR_TEXT_DIM(), "DLC",   Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_TOP);
+    Gfx::DrawRectRounded(dx, dy, DW, HEADER_H, 20, Gfx::COLOR_ACCENT());
+    Gfx::DrawRectFilled(dx, dy + HEADER_H - 20, DW, 20, Gfx::COLOR_ACCENT());
 
-    Gfx::DrawRectFilled(dx + 20, hdrY + 26, dw - 40, 1, Gfx::COLOR_SEPARATOR());
+    int titleW = Gfx::GetTextWidth(32, "Select Components to Delete");
+    int totalTitleW = + 10 + titleW;
+    int titleStartX = dx + DW / 2 - totalTitleW / 2;
+    Gfx::Print(titleStartX + 10, dy + HEADER_H / 2, 32, Gfx::COLOR_WHITE,
+               "Select Components to Delete", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
 
-    int listY = hdrY + 32;
+    {
+        char badge[16];
+        snprintf(badge, sizeof(badge), "%d", numRows);
+        int bw = Gfx::GetTextWidth(22, badge) + 20;
+        int bh = 28;
+        int bx = dx + DW - 24 - bw;
+        int by = dy + HEADER_H / 2 - bh / 2;
+        Gfx::DrawRectRounded(bx, by, bw, bh, bh / 2, {0x00,0x00,0x00,0x40});
+        Gfx::Print(bx + bw / 2, by + bh / 2, 22, Gfx::COLOR_WHITE,
+                   badge, Gfx::ALIGN_CENTER | Gfx::ALIGN_VERTICAL);
+    }
 
-    for (int i = 0; i < (int)componentChoices.size(); i++) {
-        int y = listY + i * rowH;
-        if (y + rowH > dy + dh - 80) break;
+    constexpr int PAD       = 24;
+    constexpr int ICON_SZ   = 52;
+    constexpr int COL_W     = 160;
+    constexpr int CB_R      = 13;
+
+    int contentX  = dx + PAD;
+    int contentW  = DW - PAD * 2;
+
+    int dlcCX  = dx + DW - PAD - COL_W / 2;
+    int updCX  = dlcCX - COL_W;
+    int gameCX = updCX - COL_W;
+
+    int nameCX = contentX + ICON_SZ + 16;
+    int nameMaxW = gameCX - COL_W / 2 - nameCX - 16;
+
+    int hdrY = dy + HEADER_H;
+    Gfx::DrawRectFilled(dx, hdrY, DW, COL_HDR_H, {0x00,0x00,0x00,0x28});
+
+    Gfx::Print(nameCX, hdrY + COL_HDR_H / 2, 22, Gfx::COLOR_TEXT_DIM(),
+               "Game Title", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+    Gfx::Print(gameCX, hdrY + COL_HDR_H / 2, 22, Gfx::COLOR_TEXT_DIM(),
+               "Game", Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_VERTICAL);
+    Gfx::Print(updCX,  hdrY + COL_HDR_H / 2, 22, Gfx::COLOR_TEXT_DIM(),
+               "Update", Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_VERTICAL);
+    Gfx::Print(dlcCX,  hdrY + COL_HDR_H / 2, 22, Gfx::COLOR_TEXT_DIM(),
+               "DLC", Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_VERTICAL);
+
+    SDL_Color div = Gfx::COLOR_SEPARATOR();
+    int divTop = hdrY + 6;
+    int divBot = hdrY + COL_HDR_H + visRows * (ROW_H + ROW_PAD);
+    Gfx::DrawRectFilled(gameCX - COL_W / 2 - 1, divTop, 1, divBot - divTop, div);
+    Gfx::DrawRectFilled(updCX  - COL_W / 2 - 1, divTop, 1, divBot - divTop, div);
+    Gfx::DrawRectFilled(dlcCX  - COL_W / 2 - 1, divTop, 1, divBot - divTop, div);
+
+    Gfx::DrawRectFilled(dx + PAD, hdrY + COL_HDR_H - 1, contentW, 1, Gfx::COLOR_SEPARATOR());
+
+    int listTop = hdrY + COL_HDR_H;
+    int listBot = listTop + visRows * (ROW_H + ROW_PAD) + ROW_PAD;
+
+    SDL_Rect clip = { dx, listTop, DW, listBot - listTop };
+    SDL_RenderSetClipRect(Gfx::GetRenderer(), &clip);
+
+    int scrollOff = 0;
+    if (numRows > MAX_ROWS) {
+        scrollOff = componentFocusIdx - MAX_ROWS / 2;
+        if (scrollOff < 0) scrollOff = 0;
+        if (scrollOff > numRows - MAX_ROWS) scrollOff = numRows - MAX_ROWS;
+    }
+
+    for (int i = 0; i < numRows; i++) {
+        int visIdx = i - scrollOff;
+        if (visIdx < 0 || visIdx >= MAX_ROWS) continue;
+
+        int slotY  = listTop + visIdx * (ROW_H + ROW_PAD) + ROW_PAD;
+        int cardH  = ROW_H;
+        int y      = slotY;
 
         bool focused = (i == componentFocusIdx);
         const ComponentChoice& cc = componentChoices[i];
@@ -494,76 +558,185 @@ void TitleUninstaller::DrawComponentSelectDialog() {
         bool hasUpdate = updateMap.count(lowId) > 0;
         bool hasDLC    = dlcMap.count(lowId) > 0;
 
-        SDL_Color bg = focused ? Gfx::COLOR_ROW_SELECTED() : Gfx::COLOR_ROW_BG();
-        Gfx::DrawRectRounded(dx + 15, y, dw - 30, rowH - 4, 8, bg);
+        SDL_Color rowBg = focused
+            ? Gfx::COLOR_ROW_SELECTED()
+            : (i % 2 == 0 ? Gfx::COLOR_ROW_BG() : Gfx::COLOR_ROW_BG_ALT());
+        Gfx::DrawRectFilled(dx + 4, y + 2, DW - 8, cardH - 2, {0,0,0,0x18});
+        Gfx::DrawRectRounded(dx + 4, y, DW - 8, cardH, 10, rowBg);
+
         if (focused) {
-            Gfx::DrawRectFilled(dx + 15, y, 4, rowH - 4, Gfx::COLOR_ACCENT());
+            float pulse = std::sin(selectionPulse) * 0.3f + 0.7f;
+            uint8_t alpha = (uint8_t)(180 * pulse + 75);
+            SDL_Color border = {Gfx::COLOR_ACCENT().r, Gfx::COLOR_ACCENT().g,
+                                Gfx::COLOR_ACCENT().b, alpha};
+            Gfx::DrawRectRounded(dx + 4, y, 6, cardH, 3, Gfx::COLOR_ACCENT());
+            Gfx::DrawRectOutline(dx + 4, y, DW - 8, cardH, border, 2);
         }
 
-        Gfx::Print(nameX + 10, y + (rowH - 4) / 2, 26, Gfx::COLOR_TEXT(), t.name,
-                   Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+        int iconX = contentX + 8;
+        int iconY = y + (cardH - ICON_SZ) / 2;
+        if (t.icon) {
+            Gfx::DrawRectRounded(iconX - 2, iconY - 2, ICON_SZ + 4, ICON_SZ + 4,
+                                 6, Gfx::COLOR_SEPARATOR());
+            Gfx::DrawTexture(t.icon, iconX, iconY, ICON_SZ, ICON_SZ);
+        } else {
+            Gfx::DrawRectRounded(iconX, iconY, ICON_SZ, ICON_SZ, 6,
+                                 Gfx::COLOR_SEPARATOR());
+            Gfx::Print(iconX + ICON_SZ / 2, iconY + ICON_SZ / 2, 22,
+                       Gfx::COLOR_TEXT_DIM(), "?", Gfx::ALIGN_CENTER);
+        }
 
-        // Checkboxes for Game / Update / DLC
-        auto drawCB = [&](int cx, bool checked, bool enabled, int compIdx) {
+        std::string displayName = t.name;
+        while (displayName.size() > 4 &&
+               Gfx::GetTextWidth(28, displayName) > nameMaxW) {
+            displayName.resize(displayName.size() - 1);
+        }
+        if (displayName != t.name) displayName += "\xe2\x80\xa6";
+
+        int nameY = y + cardH / 2 - 22;
+        int sizeY = y + cardH / 2 + 14;
+
+        Gfx::Print(nameCX, nameY, 28, Gfx::COLOR_TEXT(),
+                   displayName, Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
+
+        std::string sizeStr = FormatSize(t.sizeBytes);
+        Gfx::Print(nameCX, sizeY, 20, Gfx::COLOR_TEXT_DIM(),
+                   sizeStr, Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
+
+        int cbY    = y + cardH / 2 - 10;
+        int cbSzY  = y + cardH / 2 + 14;
+
+        auto drawComponentCell = [&](int cx, bool checked, bool enabled,
+                                     int compIdx, uint64_t compSize) {
             bool compFocused = focused && (compIdx == componentFocusComponent);
-            int cbR = 12;
-            SDL_Color col;
-            if (enabled) {
-                col = checked ? Gfx::COLOR_ACCENT()
-                     : (compFocused ? Gfx::COLOR_ACCENT_LIGHT() : Gfx::COLOR_SEPARATOR());
-            } else {
-                col = {0x80, 0x80, 0x80, 0x60};
+            int cy = cbY;
+
+            if (!enabled) {
+                SDL_Color naCol = {0x55, 0x55, 0x66, 0xff};
+                Gfx::DrawRectFilled(cx - 12, cy - 1, 24, 2, naCol);
+                Gfx::Print(cx, cbSzY, 18, naCol,
+                           "N/A", Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_TOP);
+                return;
             }
-            int cy = y + (rowH - 4) / 2;
+
+            SDL_Color ringCol;
+            if (compFocused)
+                ringCol = Gfx::COLOR_ACCENT_LIGHT();
+            else if (checked)
+                ringCol = Gfx::COLOR_ACCENT();
+            else
+                ringCol = Gfx::COLOR_SEPARATOR();
+
+            Gfx::DrawCircleFilled(cx, cy, CB_R, ringCol);
+
             if (checked) {
-                Gfx::DrawCircleFilled(cx, cy, cbR, col);
-                Gfx::DrawCircleFilled(cx, cy, cbR - 4, Gfx::COLOR_WHITE);
+                Gfx::DrawCircleFilled(cx, cy, CB_R - 4, Gfx::COLOR_WHITE);
             } else {
-                Gfx::DrawCircleFilled(cx, cy, cbR, col);
-                if (!enabled && compFocused) {
-                    Gfx::Print(cx, cy + cbR + 8, 16, {0x80, 0x80, 0x80, 0xff},
-                               "N/A", Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_TOP);
-                }
+                Gfx::DrawCircleFilled(cx, cy, CB_R - 3,
+                                      focused ? Gfx::COLOR_ROW_SELECTED()
+                                              : Gfx::COLOR_ROW_BG());
+            }
+
+            if (compFocused) {
+                float pulse = std::sin(selectionPulse * 1.5f) * 0.4f + 0.6f;
+                uint8_t a = (uint8_t)(200 * pulse);
+                SDL_Color hl = {Gfx::COLOR_ACCENT_LIGHT().r,
+                                Gfx::COLOR_ACCENT_LIGHT().g,
+                                Gfx::COLOR_ACCENT_LIGHT().b, a};
+                Gfx::DrawCircleFilled(cx, cy, CB_R + 4,
+                                      {hl.r, hl.g, hl.b, (uint8_t)(a / 3)});
+            }
+
+            if (compSize > 0) {
+                std::string cs = FormatSize(compSize);
+                Gfx::Print(cx, cbSzY, 20,
+                           checked ? Gfx::COLOR_ACCENT() : Gfx::COLOR_TEXT_DIM(),
+                           cs, Gfx::ALIGN_HORIZONTAL | Gfx::ALIGN_TOP);
             }
         };
 
-        drawCB(gameX, cc.wantGame, true, 0);
-        drawCB(updX,  cc.wantUpdate, hasUpdate, 1);
-        drawCB(dlcX,  cc.wantDLC,    hasDLC,    2);
+        uint64_t updSize = 0, dlcSize = 0;
+        if (hasUpdate) updSize = updateMap[lowId]->sizeBytes;
+        if (hasDLC)    dlcSize = dlcMap[lowId]->sizeBytes;
 
-        std::string sizeStr = FormatSize(t.sizeBytes);
-        int sizX = gameX - 20;
-        int sizW = Gfx::GetTextWidth(18, sizeStr);
-        Gfx::Print(sizX - sizW, y + (rowH - 4) / 2 + 14, 18, Gfx::COLOR_TEXT_DIM(),
-                   sizeStr, Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
-
-        if (hasUpdate) {
-            auto& ue = *updateMap[lowId];
-            std::string us = FormatSize(ue.sizeBytes);
-            int usW = Gfx::GetTextWidth(18, us);
-            Gfx::Print(updX - usW, y + (rowH - 4) / 2 + 14, 18, Gfx::COLOR_TEXT_DIM(),
-                       us, Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
-        }
-        if (hasDLC) {
-            auto& de = *dlcMap[lowId];
-            std::string ds = FormatSize(de.sizeBytes);
-            int dsW = Gfx::GetTextWidth(18, ds);
-            Gfx::Print(dlcX - dsW, y + (rowH - 4) / 2 + 14, 18, Gfx::COLOR_TEXT_DIM(),
-                       ds, Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
-        }
+        drawComponentCell(gameCX, cc.wantGame,   true,      0, t.sizeBytes);
+        drawComponentCell(updCX,  cc.wantUpdate, hasUpdate, 1, updSize);
+        drawComponentCell(dlcCX,  cc.wantDLC,    hasDLC,    2, dlcSize);
     }
 
-    int btnY = dy + dh - 70;
+    SDL_RenderSetClipRect(Gfx::GetRenderer(), nullptr);
 
-    DrawButtonWithIcon(dx + 80, btnY, 280, 52, Gfx::COLOR_DANGER(),
+    if (numRows > MAX_ROWS) {
+        int trackX = dx + DW - 10;
+        int trackH = visRows * (ROW_H + ROW_PAD);
+        Gfx::DrawRectRounded(trackX, listTop, 6, trackH, 3, Gfx::COLOR_SEPARATOR());
+        float ratio = (float)scrollOff / (numRows - MAX_ROWS);
+        int thumbH  = std::max(30, trackH * MAX_ROWS / numRows);
+        int thumbY  = listTop + (int)(ratio * (trackH - thumbH));
+        Gfx::DrawRectRounded(trackX, thumbY, 6, thumbH, 3, Gfx::COLOR_ACCENT());
+    }
+
+    Gfx::DrawRectFilled(dx, listBot, DW, 1, Gfx::COLOR_SEPARATOR());
+
+    int footerY = listBot + 1;
+
+    Gfx::DrawRectFilled(dx, footerY, DW, 36, {0x00,0x00,0x00,0x20});
+
+    struct HintItem { const char* glyph; const char* label; };
+    HintItem hints[] = {
+        { "\xee\x81\xbd", "Navigate" },
+        { "\xee\x81\xbe", "Switch column" },
+        { "\xee\x80\x80", "Toggle" },
+    };
+    constexpr int HINT_ICON_SZ = 26;
+    constexpr int HINT_TXT_SZ  = 20;
+    constexpr int HINT_GAP     = 5;
+    constexpr int HINT_SEP     = 36;
+    int hintY = footerY + 18;
+
+    int totalHintW = 0;
+    for (auto& h : hints) {
+        totalHintW += Gfx::GetIconTextWidth(HINT_ICON_SZ, h.glyph)
+                    + HINT_GAP
+                    + Gfx::GetTextWidth(HINT_TXT_SZ, h.label);
+    }
+    totalHintW += HINT_SEP * 2;
+
+    int hx = dx + DW / 2 - totalHintW / 2;
+    for (int h = 0; h < 3; h++) {
+        int iw = Gfx::GetIconTextWidth(HINT_ICON_SZ, hints[h].glyph);
+        Gfx::PrintIcon(hx, hintY, HINT_ICON_SZ, Gfx::COLOR_ACCENT_DARK(),
+                       hints[h].glyph, Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+        Gfx::Print(hx + iw + HINT_GAP, hintY, HINT_TXT_SZ, Gfx::COLOR_TEXT_DIM(),
+                   hints[h].label, Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+        hx += iw + HINT_GAP + Gfx::GetTextWidth(HINT_TXT_SZ, hints[h].label) + HINT_SEP;
+    }
+
+    constexpr int BTN_W = 260;
+    constexpr int BTN_H = 52;
+    int btnY = footerY + 36 + (FOOTER_H - 36 - BTN_H) / 2;
+
+    {
+        uint64_t totalSel = 0;
+        for (const auto& cc : componentChoices) {
+            TitleEntry& t = *titles[cc.titleIdx];
+            uint32_t lid = (uint32_t)(t.titleId & 0xFFFFFFFF);
+            if (cc.wantGame)   totalSel += t.sizeBytes;
+            if (cc.wantUpdate && updateMap.count(lid)) totalSel += updateMap[lid]->sizeBytes;
+            if (cc.wantDLC    && dlcMap.count(lid))    totalSel += dlcMap[lid]->sizeBytes;
+        }
+        std::string sumStr = FormatSize(totalSel) + " will be freed";
+        Gfx::Print(dx + DW / 2, btnY + BTN_H / 2, 24,
+                   Gfx::COLOR_ACCENT(), sumStr,
+                   Gfx::ALIGN_CENTER | Gfx::ALIGN_VERTICAL);
+    }
+
+    DrawButtonWithIcon(dx + 48, btnY, BTN_W, BTN_H, Gfx::COLOR_DANGER(),
                        "\xee\x81\x85", "Delete", Gfx::COLOR_WHITE);
 
-    DrawButtonWithIcon(dx + dw - 360, btnY, 280, 52, Gfx::COLOR_SEPARATOR(),
-                       "\xee\x80\x81", "Cancel", Gfx::COLOR_TEXT());
-
-    Gfx::Print(dx + dw / 2, btnY - 22, 20, Gfx::COLOR_TEXT_DIM(),
-               "\xee\x81\xbe Left/Right: navigate column   \xee\x80\x80 A: toggle   \xee\x81\xbd Up/Down: navigate row",
-               Gfx::ALIGN_CENTER | Gfx::ALIGN_TOP);
+    DrawButtonWithIcon(dx + DW - 48 - BTN_W, btnY, BTN_W, BTN_H,
+                       Gfx::COLOR_SEPARATOR(), "\xee\x80\x81", "Cancel",
+                       Gfx::COLOR_TEXT());
 }
 
 void TitleUninstaller::DrawUninstallProgress() {

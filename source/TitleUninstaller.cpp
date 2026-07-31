@@ -382,6 +382,19 @@ void TitleUninstaller::UpdateSelectComponents(Input& input) {
         }
     }
     if (input.IsPressed(Input::BUTTON_PLUS)) {
+        // Sync checked state back to titles: only entries that have at least
+        // one component selected should remain checked going into ConfirmDelete
+        for (auto& t : titles) t->checked = false;
+        for (const auto& cc : componentChoices) {
+            if (cc.wantGame || cc.wantUpdate || cc.wantDLC)
+                titles[cc.titleIdx]->checked = true;
+        }
+        // If nothing ended up checked, go back to list instead of an empty confirm
+        if (CheckedCount() == 0) {
+            componentChoices.clear();
+            state = AppState::List;
+            return;
+        }
         state = AppState::ConfirmDelete;
     }
     if (input.IsPressed(Input::BUTTON_B)) {
