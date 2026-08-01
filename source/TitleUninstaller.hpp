@@ -9,6 +9,7 @@
 #include <map>
 #include <coreinit/mcp.h>
 #include <coreinit/energysaver.h>
+#include <coreinit/systeminfo.h>
 
 enum class TitleKind {
     Game,       // 0x00050000

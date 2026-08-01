@@ -434,7 +434,28 @@ void TitleUninstaller::DrawConfirmDialog() {
 
     int checked = CheckedCount();
     char line1[80];
-    snprintf(line1, sizeof(line1), "Delete %d title%s?", checked, checked == 1 ? "" : "s");
+    if (componentChoices.size() == 1) {
+        const ComponentChoice& cc = componentChoices[0];
+        std::string label = "Delete ";
+        std::vector<const char*> parts;
+        if (cc.wantGame)   parts.push_back("Game");
+        if (cc.wantUpdate) parts.push_back("Update");
+        if (cc.wantDLC)    parts.push_back("DLC");
+        if (parts.empty()) {
+            snprintf(line1, sizeof(line1), "Delete %d title%s?", checked,
+                     checked == 1 ? "" : "s");
+        } else {
+            for (size_t i = 0; i < parts.size(); i++) {
+                if (i > 0) label += (i == parts.size() - 1) ? " and " : ", ";
+                label += parts[i];
+            }
+            label += "?";
+            snprintf(line1, sizeof(line1), "%s", label.c_str());
+        }
+    } else {
+        snprintf(line1, sizeof(line1), "Delete %d title%s?", checked,
+                 checked == 1 ? "" : "s");
+    }
     Gfx::Print(dx + dw / 2, dy + 110, 34, Gfx::COLOR_TEXT(),
                line1, Gfx::ALIGN_CENTER | Gfx::ALIGN_TOP);
 
@@ -476,11 +497,11 @@ void TitleUninstaller::DrawComponentSelectDialog() {
     Gfx::DrawRectRounded(dx, dy, DW, HEADER_H, 20, Gfx::COLOR_ACCENT());
     Gfx::DrawRectFilled(dx, dy + HEADER_H - 20, DW, 20, Gfx::COLOR_ACCENT());
 
-    int titleW = Gfx::GetTextWidth(32, "Select Components to Delete");
+    int titleW = Gfx::GetTextWidth(32, "Please select the item(s) you wish to delete?");
     int totalTitleW = + 10 + titleW;
     int titleStartX = dx + DW / 2 - totalTitleW / 2;
     Gfx::Print(titleStartX + 10, dy + HEADER_H / 2, 32, Gfx::COLOR_WHITE,
-               "Select Components to Delete", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+               "Please select the item(s) you wish to delete", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
 
     {
         char badge[16];

@@ -72,6 +72,9 @@ void TitleUninstaller::StartUninstall() {
         return;
     }
 
+    OSEnableHomeButtonMenu(FALSE);
+    LOG("Home button menu disabled during uninstall");
+
     state = AppState::Uninstalling;
     LOG("Starting batch uninstall of %zu jobs", uninstallQueue.size());
 }
@@ -104,6 +107,9 @@ bool TitleUninstaller::UninstallNext() {
         updateMap.clear();
         dlcMap.clear();
         ScanComponents();
+
+        OSEnableHomeButtonMenu(TRUE);
+        LOG("Home button menu re-enabled");
 
         state = AppState::Done;
         return false;

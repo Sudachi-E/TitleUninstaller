@@ -58,6 +58,10 @@ TitleUninstaller::TitleUninstaller()
 
 TitleUninstaller::~TitleUninstaller() {
     OSReport("[EXIT] ~TitleUninstaller begin\n");
+    if (!OSIsHomeButtonMenuEnabled()) {
+        OSEnableHomeButtonMenu(TRUE);
+        OSReport("[EXIT] Re-enabled Home button menu\n");
+    }
     if (keepAwake) {
         IMEnableAPD();
         IMEnableDim();
