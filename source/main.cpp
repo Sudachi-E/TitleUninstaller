@@ -9,10 +9,33 @@
 #include <padscore/kpad.h>
 #include <coreinit/title.h>
 #include <coreinit/debug.h>
+#include <coreinit/filesystem.h>
+#include <coreinit/filesystem_fsa.h>
 #include <sysapp/launch.h>
 #include <mocha/mocha.h>
 #include <nsysnet/netconfig.h>
 #include <sndcore2/core.h>
+
+static FSAClientHandle sInstallFsaClient = 0;
+
+static void SetupSdBindMount() {
+    if (FSAInit() != FS_ERROR_OK) {
+        LOG("FSAInit failed — SD installs unavailable");
+        return;
+    }
+    sInstallFsaClient = FSAAddClient(nullptr);
+    if (sInstallFsaClient == 0) {
+        LOG("FSAAddClient failed — SD installs unavailable");
+        return;
+    }
+    if (Mocha_UnlockFSClientEx(sInstallFsaClient) != MOCHA_RESULT_SUCCESS) {
+        LOG("Mocha_UnlockFSClientEx failed — SD installs unavailable");
+        return;
+    }
+    FSError e = FSAMount(sInstallFsaClient, "/vol/external01", "/vol/app_sd",
+                         FSA_MOUNT_FLAG_BIND_MOUNT, nullptr, 0);
+    LOG("FSAMount /vol/external01 -> /vol/app_sd result=%d", (int)e);
+}
 
 int main(int argc, char const* argv[]) {
     WHBProcInit();
@@ -42,6 +65,8 @@ int main(int argc, char const* argv[]) {
     // Mount USB and NAND storage to get title directories and metadata
     Mocha_MountFS("storage_usb01", nullptr, "/vol/storage_usb01");
     Mocha_MountFS("storage_mlc01", nullptr, "/vol/storage_mlc01");
+
+    SetupSdBindMount();
 
     if (!Gfx::Init()) {
         LOG("ERROR: Gfx::Init failed");
@@ -82,6 +107,12 @@ int main(int argc, char const* argv[]) {
 
     Mocha_UnmountFS("storage_usb01");
     Mocha_UnmountFS("storage_mlc01");
+    if (sInstallFsaClient != 0) {
+        FSAUnmount(sInstallFsaClient, "/vol/app_sd", FSA_UNMOUNT_FLAG_BIND_MOUNT);
+        FSADelClient(sInstallFsaClient);
+        FSAShutdown();
+        sInstallFsaClient = 0;
+    }
     Mocha_DeInitLibrary();
     KPADShutdown();
     netconf_close();

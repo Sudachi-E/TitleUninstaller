@@ -11,6 +11,8 @@ public:
 
     bool IsPressed(uint32_t button) const;
     bool IsHeld(uint32_t button)    const;
+    bool RightStickLeft()  const;
+    bool RightStickRight() const;
     uint8_t GetBattery() const { return vpadStatus.battery; }
 
     static constexpr uint32_t BUTTON_A     = 1 << 0;
@@ -36,6 +38,11 @@ private:
 
     uint32_t buttonsPressed;
     uint32_t buttonsHeld;
+
+    bool rstickLeft;
+    bool rstickRight;
+    bool rstickLeftPrev;
+    bool rstickRightPrev;
 
     uint32_t MapVPADButtons(uint32_t vpadButtons);
     uint32_t MapProButtons(uint32_t proButtons);

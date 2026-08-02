@@ -11,13 +11,13 @@
 
 namespace {
 
-void DrawAppHeader(const char* suffix) {
+void DrawAppHeader(const char* title, const char* suffix = nullptr) {
     Gfx::DrawRectFilled(0, 0, Gfx::SCREEN_WIDTH, 120, Gfx::COLOR_BAR_BG());
     Gfx::DrawRectFilled(0, 120, Gfx::SCREEN_WIDTH, 4, Gfx::COLOR_ACCENT_DARK());
-    Gfx::PrintWithShadow(60, 60, 52, Gfx::COLOR_WHITE, "Title Uninstaller",
+    Gfx::PrintWithShadow(60, 60, 52, Gfx::COLOR_WHITE, title,
                          Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
     if (suffix) {
-        int titleW = Gfx::GetTextWidth(52, "Title Uninstaller");
+        int titleW = Gfx::GetTextWidth(52, title);
         Gfx::Print(60 + titleW + 24, 60, 28, Gfx::COLOR_ACCENT_DARK(), suffix,
                    Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
     }
@@ -81,37 +81,55 @@ std::string TitleUninstaller::FormatSize(uint64_t bytes) const {
 }
 
 int TitleUninstaller::CheckedCount() const {
+    const auto& list = (appMode == AppMode::Install) ? installTitles : titles;
     int n = 0;
-    for (const auto& t : titles) if (t->checked) n++;
+    for (const auto& t : list) if (t->checked) n++;
     return n;
 }
 
 uint64_t TitleUninstaller::CheckedBytes() const {
+    const auto& list = (appMode == AppMode::Install) ? installTitles : titles;
     uint64_t total = 0;
-    for (const auto& t : titles) if (t->checked) total += t->sizeBytes;
+    for (const auto& t : list) if (t->checked) total += t->sizeBytes;
+    return total;
+}
+
+int TitleUninstaller::InstallCheckedCount() const {
+    int n = 0;
+    for (const auto& t : installTitles) if (t->checked) n++;
+    return n;
+}
+
+uint64_t TitleUninstaller::InstallCheckedBytes() const {
+    uint64_t total = 0;
+    for (const auto& t : installTitles) if (t->checked) total += t->sizeBytes;
     return total;
 }
 
 void TitleUninstaller::ApplySort() {
+    ApplySortFor(titles);
+}
+
+void TitleUninstaller::ApplySortFor(std::vector<std::unique_ptr<TitleEntry>>& list) {
     // Remembers which title was selected so it will follow it after sort
-    TitleEntry* selected = (selectedIndex >= 0 && selectedIndex < (int)titles.size())
-                           ? titles[selectedIndex].get() : nullptr;
+    TitleEntry* selected = (selectedIndex >= 0 && selectedIndex < (int)list.size())
+                           ? list[selectedIndex].get() : nullptr;
 
     switch (sortMode) {
     case SortMode::Alphabetical:
-        std::stable_sort(titles.begin(), titles.end(),
+        std::stable_sort(list.begin(), list.end(),
             [](const std::unique_ptr<TitleEntry>& a, const std::unique_ptr<TitleEntry>& b) {
                 return a->name < b->name;
             });
         break;
     case SortMode::SizeDesc:
-        std::stable_sort(titles.begin(), titles.end(),
+        std::stable_sort(list.begin(), list.end(),
             [](const std::unique_ptr<TitleEntry>& a, const std::unique_ptr<TitleEntry>& b) {
                 return a->sizeBytes > b->sizeBytes;
             });
         break;
     case SortMode::SizeAsc:
-        std::stable_sort(titles.begin(), titles.end(),
+        std::stable_sort(list.begin(), list.end(),
             [](const std::unique_ptr<TitleEntry>& a, const std::unique_ptr<TitleEntry>& b) {
                 return a->sizeBytes < b->sizeBytes;
             });
@@ -120,8 +138,8 @@ void TitleUninstaller::ApplySort() {
     }
 
     if (selected) {
-        for (int i = 0; i < (int)titles.size(); i++) {
-            if (titles[i].get() == selected) {
+        for (int i = 0; i < (int)list.size(); i++) {
+            if (list[i].get() == selected) {
                 selectedIndex = i;
                 // Clamp scroll
                 if (selectedIndex < targetScroll)
@@ -135,17 +153,24 @@ void TitleUninstaller::ApplySort() {
 }
 
 void TitleUninstaller::LoadNextPendingIcon() {
+    if (appMode == AppMode::Install)
+        LoadNextPendingIconFrom(installTitles);
+    else
+        LoadNextPendingIconFrom(titles);
+}
+
+void TitleUninstaller::LoadNextPendingIconFrom(std::vector<std::unique_ptr<TitleEntry>>& list) {
     int first = targetScroll;
-    int last  = std::min(first + VISIBLE_ROWS + 1, (int)titles.size());
+    int last  = std::min(first + VISIBLE_ROWS + 1, (int)list.size());
 
     for (int i = first; i < last; i++) {
-        if (!titles[i]->iconLoaded) {
-            titles[i]->iconLoaded = true;
-            const std::string& path = titles[i]->iconPath;
+        if (!list[i]->iconLoaded) {
+            list[i]->iconLoaded = true;
+            const std::string& path = list[i]->iconPath;
             if (!path.empty()) {
                 SDL_Surface* surf = IMG_Load(path.c_str());
                 if (surf) {
-                    titles[i]->icon = SDL_CreateTextureFromSurface(Gfx::GetRenderer(), surf);
+                    list[i]->icon = SDL_CreateTextureFromSurface(Gfx::GetRenderer(), surf);
                     SDL_FreeSurface(surf);
                 }
             }
@@ -159,11 +184,13 @@ void TitleUninstaller::DrawBackground() {
 }
 
 void TitleUninstaller::DrawTopBar() {
-    DrawAppHeader(nullptr);
+    const char* headerTitle = (appMode == AppMode::Install)
+                              ? "Title Installer" : "Title Uninstaller";
+    DrawAppHeader(headerTitle);
 
     // Storage location tabs (USB / NAND)
     constexpr int TAB_W = 120, TAB_H = 36, TAB_Y = 60 - 18;
-    int tabX = 60 + Gfx::GetTextWidth(52, "Title Uninstaller") + 40;
+    int tabX = 60 + Gfx::GetTextWidth(52, headerTitle) + 40;
 
     SDL_Color usbBg  = (currentStorage == StorageLocation::USB)
                        ? Gfx::COLOR_WHITE : Gfx::COLOR_ACCENT_DARK();
@@ -202,19 +229,31 @@ void TitleUninstaller::DrawTopBar() {
     int pillX = Gfx::SCREEN_WIDTH - 60 - sw - PILL_PAD;
     int pillY = 60 - PILL_H / 2;
 
-    {
-        int lrIw1 = Gfx::GetIconTextWidth(28, "\xee\x82\x83");
-        int lrIw2 = Gfx::GetIconTextWidth(28, "\xee\x82\x84");
-        int lrTw  = Gfx::GetTextWidth(22, "Sort");
-        int lrTotal = lrIw1 + 2 + lrIw2 + 4 + lrTw;
-        int lrX = pillX - lrTotal - 16;
-        Gfx::PrintIcon(lrX, 60, 28, Gfx::COLOR_ACCENT_DARK(),
-                       "\xee\x82\x83", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
-        Gfx::PrintIcon(lrX + lrIw1 + 2, 60, 28, Gfx::COLOR_ACCENT_DARK(),
-                       "\xee\x82\x84", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
-        Gfx::Print(lrX + lrIw1 + 2 + lrIw2 + 4, 60, 22, Gfx::COLOR_WHITE,
-                   "Sort", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
-    }
+    int lrIw1 = Gfx::GetIconTextWidth(28, "\xee\x82\x83");
+    int lrIw2 = Gfx::GetIconTextWidth(28, "\xee\x82\x84");
+    int lrTw  = Gfx::GetTextWidth(22, "Sort");
+    int lrTotal = lrIw1 + 2 + lrIw2 + 4 + lrTw;
+    int lrX = pillX - lrTotal - 16;
+
+    // Mode switch hint (analog stick left/right) — left of the sort hint.
+    // The label shows the menu the user is currently in.
+    const char* modeName = (appMode == AppMode::Install) ? "Installer" : "Uninstaller";
+    const char* modeGlyph = (appMode == AppMode::Install) ? "\xee\x82\x81" : "\xee\x82\x82";
+    int mIw     = Gfx::GetIconTextWidth(28, modeGlyph);
+    int mTw     = Gfx::GetTextWidth(22, modeName);
+    int mTotal  = mIw + 4 + mTw;
+    int mX      = lrX - mTotal - 20;
+    Gfx::PrintIcon(mX, 60, 28, Gfx::COLOR_ACCENT_DARK(),
+                   modeGlyph, Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+    Gfx::Print(mX + mIw + 4, 60, 22, Gfx::COLOR_WHITE,
+               modeName, Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+
+    Gfx::PrintIcon(lrX, 60, 28, Gfx::COLOR_ACCENT_DARK(),
+                   "\xee\x82\x83", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+    Gfx::PrintIcon(lrX + lrIw1 + 2, 60, 28, Gfx::COLOR_ACCENT_DARK(),
+                   "\xee\x82\x84", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+    Gfx::Print(lrX + lrIw1 + 2 + lrIw2 + 4, 60, 22, Gfx::COLOR_WHITE,
+               "Sort", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
 
     Gfx::DrawRectRounded(pillX, pillY, sw + PILL_PAD * 2, PILL_H, 10,
                          Gfx::COLOR_ACCENT_DARK());
@@ -227,7 +266,8 @@ void TitleUninstaller::DrawBottomBar() {
     Gfx::DrawRectFilled(0, 1000, Gfx::SCREEN_WIDTH, 3, Gfx::COLOR_ACCENT());
 
     int checked = CheckedCount();
-    int total   = (int)titles.size();
+    int total   = (appMode == AppMode::Install)
+                  ? (int)installTitles.size() : (int)titles.size();
     char countBuf[64];
     snprintf(countBuf, sizeof(countBuf), "Selected %d / %d", checked, total);
     int cw2 = Gfx::GetTextWidth(26, countBuf);
@@ -245,17 +285,34 @@ void TitleUninstaller::DrawBottomBar() {
 
     DrawHint(1920 - 40,       "\xee\x80\x80", "Select",          Gfx::ALIGN_RIGHT);
     DrawHint(1920 - 40 - 220, "\xee\x80\x83", "All/None",        Gfx::ALIGN_RIGHT);
-    DrawHint(1920 - 40 - 440, "\xee\x81\x85", "Delete Selected", Gfx::ALIGN_RIGHT);
+    if (appMode == AppMode::Install)
+        DrawHint(1920 - 40 - 440, "\xee\x81\x85", "Install Selected", Gfx::ALIGN_RIGHT);
+    else
+        DrawHint(1920 - 40 - 440, "\xee\x81\x85", "Delete Selected", Gfx::ALIGN_RIGHT);
 }
 
 void TitleUninstaller::DrawList() {
-    if (titles.empty()) {
+    DrawTitleListImpl(titles,
+                      (currentStorage == StorageLocation::USB)
+                      ? "No USB titles found" : "No NAND titles found",
+                      nullptr);
+}
+
+void TitleUninstaller::DrawInstallList() {
+    DrawTitleListImpl(installTitles, "No installable titles found in sd:/install",
+                      "Put WUP install folders (with title.tmd) in sd:/install, then press X to rescan.");
+}
+
+void TitleUninstaller::DrawTitleListImpl(const std::vector<std::unique_ptr<TitleEntry>>& list,
+                                         const char* emptyText, const char* emptySub) {
+    if (list.empty()) {
         Gfx::DrawRectRounded(LIST_X, LIST_Y, LIST_W, 400, 16, Gfx::COLOR_PANEL_BG());
         Gfx::DrawRectOutline(LIST_X, LIST_Y, LIST_W, 400, Gfx::COLOR_SEPARATOR(), 2);
-        Gfx::Print(LIST_X + LIST_W / 2, LIST_Y + 200, 36, Gfx::COLOR_TEXT_DIM(),
-                   (currentStorage == StorageLocation::USB)
-                   ? "No USB titles found" : "No NAND titles found",
-                   Gfx::ALIGN_CENTER);
+        Gfx::Print(LIST_X + LIST_W / 2, LIST_Y + 180, 36, Gfx::COLOR_TEXT_DIM(),
+                   emptyText, Gfx::ALIGN_CENTER);
+        if (emptySub)
+            Gfx::Print(LIST_X + LIST_W / 2, LIST_Y + 250, 24, Gfx::COLOR_TEXT_DIM(),
+                       emptySub, Gfx::ALIGN_CENTER);
         return;
     }
 
@@ -268,14 +325,14 @@ void TitleUninstaller::DrawList() {
 
     for (int row = 0; row < VISIBLE_ROWS + 1; row++) {
         int idx = firstRow + row;
-        if (idx < 0 || idx >= (int)titles.size()) continue;
+        if (idx < 0 || idx >= (int)list.size()) continue;
 
         int x = LIST_X;
         int y = LIST_Y + row * ROW_H - (int)subOffset;
 
         if (y + ROW_H < LIST_Y || y > LIST_BOTTOM) continue;
 
-        TitleEntry& t = *titles[idx];
+        TitleEntry& t = *list[idx];
         bool sel = (idx == selectedIndex);
 
         Gfx::DrawRectFilled(x + 3, y + 3, LIST_W - 6, ROW_H - 6,
@@ -326,14 +383,14 @@ void TitleUninstaller::DrawList() {
                    Gfx::ALIGN_RIGHT | Gfx::ALIGN_VERTICAL);
     }
 
-    if ((int)titles.size() > VISIBLE_ROWS) {
+    if ((int)list.size() > VISIBLE_ROWS) {
         int trackH = VISIBLE_ROWS * ROW_H;
         int trackX = LIST_X + LIST_W + 10;
         int trackY = LIST_Y;
         Gfx::DrawRectRounded(trackX, trackY, 8, trackH, 4,
                              {0xe0, 0xdc, 0xd0, 0xff});
-        float ratio = (float)targetScroll / std::max(1, (int)titles.size() - VISIBLE_ROWS);
-        int thumbH  = std::max(40, trackH * VISIBLE_ROWS / (int)titles.size());
+        float ratio = (float)targetScroll / std::max(1, (int)list.size() - VISIBLE_ROWS);
+        int thumbH  = std::max(40, trackH * VISIBLE_ROWS / (int)list.size());
         int thumbY  = trackY + (int)(ratio * (trackH - thumbH));
         Gfx::DrawRectRounded(trackX, thumbY, 8, thumbH, 4, Gfx::COLOR_ACCENT());
     }
@@ -352,8 +409,13 @@ void TitleUninstaller::DrawStoragePanel() {
 
     Gfx::DrawRectRounded(px, py, pw, 52, 14, Gfx::COLOR_ACCENT());
     Gfx::DrawRectFilled(px, py + 38, pw, 14, Gfx::COLOR_ACCENT());
+    const char* panelTitle = (currentStorage == StorageLocation::USB)
+                             ? "USB Storage" : "NAND Storage";
+    if (appMode == AppMode::Install)
+        panelTitle = (currentStorage == StorageLocation::USB)
+                     ? "Install to USB" : "Install to NAND";
     Gfx::Print(px + 20, py + 26, 26, Gfx::COLOR_WHITE,
-               (currentStorage == StorageLocation::USB) ? "USB Storage" : "NAND Storage",
+               panelTitle,
                Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
 
     int barX = px + 20;
@@ -392,7 +454,9 @@ void TitleUninstaller::DrawStoragePanel() {
     int checked = CheckedCount();
     uint64_t selBytes = CheckedBytes();
 
-    Gfx::Print(px + 20, py + 170, 26, Gfx::COLOR_TEXT_DIM(), "Selected for deletion",
+    const char* selLabel = (appMode == AppMode::Install)
+                           ? "Selected for installation" : "Selected for deletion";
+    Gfx::Print(px + 20, py + 170, 26, Gfx::COLOR_TEXT_DIM(), selLabel,
                Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
     char selBuf[32];
     snprintf(selBuf, sizeof(selBuf), "%d title%s", checked, checked == 1 ? "" : "s");
@@ -400,19 +464,27 @@ void TitleUninstaller::DrawStoragePanel() {
                Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
 
     if (checked > 0) {
-        Gfx::Print(px + 20, py + 254, 34, Gfx::COLOR_DANGER(),
+        Gfx::Print(px + 20, py + 254, 34,
+                   (appMode == AppMode::Install) ? Gfx::COLOR_ACCENT() : Gfx::COLOR_DANGER(),
                    FormatSize(selBytes), Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
         Gfx::Print(px + 20 + Gfx::GetTextWidth(34, FormatSize(selBytes)) + 10,
-                   py + 254, 24, Gfx::COLOR_TEXT_DIM(), "will be freed",
+                   py + 254, 24, Gfx::COLOR_TEXT_DIM(),
+                   (appMode == AppMode::Install) ? "will be used" : "will be freed",
                    Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
     }
 
     Gfx::DrawRectFilled(px + 20, py + 305, pw - 40, 1, Gfx::COLOR_SEPARATOR());
     char totalBuf[48];
-    snprintf(totalBuf, sizeof(totalBuf), "%d %s title%s installed",
-             (int)titles.size(),
-             (currentStorage == StorageLocation::USB) ? "USB" : "NAND",
-             titles.size() == 1 ? "" : "s");
+    if (appMode == AppMode::Install) {
+        snprintf(totalBuf, sizeof(totalBuf), "%d title%s ready to install",
+                 (int)installTitles.size(),
+                 installTitles.size() == 1 ? "" : "s");
+    } else {
+        snprintf(totalBuf, sizeof(totalBuf), "%d %s title%s installed",
+                 (int)titles.size(),
+                 (currentStorage == StorageLocation::USB) ? "USB" : "NAND",
+                 titles.size() == 1 ? "" : "s");
+    }
     Gfx::Print(px + 20, py + 320, 24, Gfx::COLOR_TEXT_DIM(), totalBuf,
                Gfx::ALIGN_LEFT | Gfx::ALIGN_TOP);
 }
@@ -469,6 +541,45 @@ void TitleUninstaller::DrawConfirmDialog() {
     int btnY = dy + dh - 80;
     DrawButtonWithIcon(dx + 80, btnY, 280, 52, Gfx::COLOR_DANGER(),
                        "\xee\x80\x80", "Confirm", Gfx::COLOR_WHITE);
+    DrawButtonWithIcon(dx + dw - 360, btnY, 280, 52, Gfx::COLOR_SEPARATOR(),
+                       "\xee\x80\x81", "Cancel", Gfx::COLOR_TEXT());
+}
+
+void TitleUninstaller::DrawInstallConfirmDialog() {
+    Gfx::DrawRectFilled(0, 0, Gfx::SCREEN_WIDTH, Gfx::SCREEN_HEIGHT, {0x00, 0x00, 0x00, 0xb0});
+
+    int dw = 860, dh = 360;
+    int dx = (Gfx::SCREEN_WIDTH  - dw) / 2;
+    int dy = (Gfx::SCREEN_HEIGHT - dh) / 2;
+
+    Gfx::DrawRectFilled(dx + 5, dy + 5, dw, dh, {0x00, 0x00, 0x00, 0x30});
+    Gfx::DrawRectRounded(dx, dy, dw, dh, 20, Gfx::COLOR_PANEL_BG());
+
+    Gfx::DrawRectRounded(dx, dy, dw, 60, 20, Gfx::COLOR_ACCENT());
+    Gfx::DrawRectFilled(dx, dy + 40, dw, 20, Gfx::COLOR_ACCENT());
+    Gfx::Print(dx + dw / 2, dy + 30, 36, Gfx::COLOR_WHITE,
+               "Confirm Installation", Gfx::ALIGN_CENTER | Gfx::ALIGN_VERTICAL);
+
+    int checked = CheckedCount();
+    char line1[80];
+    snprintf(line1, sizeof(line1), "Install %d title%s?",
+             checked, checked == 1 ? "" : "s");
+    Gfx::Print(dx + dw / 2, dy + 110, 34, Gfx::COLOR_TEXT(),
+               line1, Gfx::ALIGN_CENTER | Gfx::ALIGN_TOP);
+
+    std::string target = (currentStorage == StorageLocation::USB) ? "USB" : "NAND";
+    std::string sizeStr = "This will use " + FormatSize(CheckedBytes()) +
+                          " on " + target + " storage.";
+    Gfx::Print(dx + dw / 2, dy + 160, 28, Gfx::COLOR_TEXT(),
+               sizeStr, Gfx::ALIGN_CENTER | Gfx::ALIGN_TOP);
+
+    Gfx::Print(dx + dw / 2, dy + 205, 26, Gfx::COLOR_ACCENT(),
+               "The source files on your SD card will not be deleted.",
+               Gfx::ALIGN_CENTER | Gfx::ALIGN_TOP);
+
+    int btnY = dy + dh - 80;
+    DrawButtonWithIcon(dx + 80, btnY, 280, 52, Gfx::COLOR_ACCENT(),
+                       "\xee\x80\x80", "Install", Gfx::COLOR_WHITE);
     DrawButtonWithIcon(dx + dw - 360, btnY, 280, 52, Gfx::COLOR_SEPARATOR(),
                        "\xee\x80\x81", "Cancel", Gfx::COLOR_TEXT());
 }
@@ -795,6 +906,58 @@ void TitleUninstaller::DrawUninstallProgress() {
     }
 }
 
+void TitleUninstaller::DrawInstallProgress() {
+    DrawBackground();
+    DrawTopBar();
+
+    int total   = (int)installQueue.size();
+    int current = std::min(installCurrent, total);
+
+    Gfx::DrawRectFilled(203, 383, 1520, 314, {0x00, 0x00, 0x00, 0x18});
+    Gfx::DrawRectRounded(200, 380, 1520, 314, 16, Gfx::COLOR_PANEL_BG());
+
+    if (installCurrent < total) {
+        Gfx::Print(960, 430, 34, Gfx::COLOR_TEXT(),
+                   "Installing: " + installQueue[installCurrent].name, Gfx::ALIGN_CENTER);
+    }
+
+    float frac = 0.0f;
+    if (installSizeTotal > 0)
+        frac = (float)installSizeProgress / (float)installSizeTotal;
+    else if (installContentsTotal > 0)
+        frac = (float)installContentsProgress / (float)installContentsTotal;
+    else if (total > 0)
+        frac = (float)current / (float)total;
+    if (frac > 1.0f) frac = 1.0f;
+
+    int barX = 260, barY = 490, barW = 1400, barH = 24;
+    Gfx::DrawRectRounded(barX, barY, barW, barH, barH / 2, Gfx::COLOR_STORAGE_FREE());
+    if (frac > 0.0f) {
+        int fillW = (int)((float)barW * frac);
+        if (fillW > 0)
+            Gfx::DrawRectRounded(barX, barY, fillW, barH, barH / 2, Gfx::COLOR_ACCENT());
+    }
+
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%d / %d", current, total);
+    Gfx::Print(960, 540, 28, Gfx::COLOR_TEXT_DIM(), buf, Gfx::ALIGN_CENTER);
+
+    if (installSizeProgress > 0 && installSizeTotal > 0) {
+        char sz[64];
+        snprintf(sz, sizeof(sz), "%s / %s",
+                 FormatSize(installSizeProgress).c_str(),
+                 FormatSize(installSizeTotal).c_str());
+        Gfx::Print(960, 574, 22, Gfx::COLOR_TEXT_DIM(), sz, Gfx::ALIGN_CENTER);
+    }
+
+    if (installSucceeded > 0 || installFailed > 0) {
+        char stats[80];
+        snprintf(stats, sizeof(stats), "Done: %d   Failed: %d",
+                 installSucceeded, installFailed);
+        Gfx::Print(960, 606, 24, Gfx::COLOR_TEXT_DIM(), stats, Gfx::ALIGN_CENTER);
+    }
+}
+
 void TitleUninstaller::DrawDoneScreen() {
     DrawBackground();
     DrawTopBar();
@@ -816,6 +979,57 @@ void TitleUninstaller::DrawDoneScreen() {
         char fail[80];
         snprintf(fail, sizeof(fail), "%d title%s failed to uninstall.",
                  uninstallFailed, uninstallFailed == 1 ? "" : "s");
+        Gfx::Print(960, 460, 28, Gfx::COLOR_DANGER(), fail, Gfx::ALIGN_CENTER);
+    }
+
+    {
+        constexpr int ICON_SZ = 30;
+        constexpr int TXT_SZ  = 26;
+        constexpr int GAP     = 6;
+        constexpr int Y       = 560;
+
+        int iw1 = Gfx::GetIconTextWidth(ICON_SZ, "\xee\x80\x80");
+        int tw1 = Gfx::GetTextWidth(TXT_SZ, "Back to list");
+        int iw2 = Gfx::GetIconTextWidth(ICON_SZ, "\xee\x81\x84");
+        int tw2 = Gfx::GetTextWidth(TXT_SZ, "Exit (HOME)");
+        constexpr int SEP = 60;
+        int total = iw1 + GAP + tw1 + SEP + iw2 + GAP + tw2;
+        int sx = 960 - total / 2;
+
+        Gfx::PrintIcon(sx, Y, ICON_SZ, Gfx::COLOR_ACCENT_DARK(),
+                       "\xee\x80\x80", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+        Gfx::Print(sx + iw1 + GAP, Y, TXT_SZ, Gfx::COLOR_TEXT(),
+                   "Back to list", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+
+        int sx2 = sx + iw1 + GAP + tw1 + SEP;
+        Gfx::PrintIcon(sx2, Y, ICON_SZ, Gfx::COLOR_ACCENT_DARK(),
+                       "\xee\x81\x84", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+        Gfx::Print(sx2 + iw2 + GAP, Y, TXT_SZ, Gfx::COLOR_TEXT(),
+                   "Exit (HOME)", Gfx::ALIGN_LEFT | Gfx::ALIGN_VERTICAL);
+    }
+}
+
+void TitleUninstaller::DrawInstallDoneScreen() {
+    DrawBackground();
+    DrawTopBar();
+
+    Gfx::DrawRectFilled(363, 283, 1200, 420, {0x00, 0x00, 0x00, 0x18});
+    Gfx::DrawRectRounded(360, 280, 1200, 420, 20, Gfx::COLOR_PANEL_BG());
+
+    Gfx::DrawRectRounded(360, 280, 1200, 60, 20, Gfx::COLOR_ACCENT());
+    Gfx::DrawRectFilled(360, 320, 1200, 20, Gfx::COLOR_ACCENT());
+    Gfx::Print(960, 310, 36, Gfx::COLOR_WHITE, "Install Complete",
+               Gfx::ALIGN_CENTER | Gfx::ALIGN_VERTICAL);
+
+    char line[80];
+    snprintf(line, sizeof(line), "%d title%s installed successfully.",
+             installSucceeded, installSucceeded == 1 ? "" : "s");
+    Gfx::Print(960, 410, 34, Gfx::COLOR_TEXT(), line, Gfx::ALIGN_CENTER);
+
+    if (installFailed > 0) {
+        char fail[80];
+        snprintf(fail, sizeof(fail), "%d title%s failed to install.",
+                 installFailed, installFailed == 1 ? "" : "s");
         Gfx::Print(960, 460, 28, Gfx::COLOR_DANGER(), fail, Gfx::ALIGN_CENTER);
     }
 
@@ -868,9 +1082,32 @@ void TitleUninstaller::DrawLoadingScreen() {
     Gfx::Print(960, 560, 26, Gfx::COLOR_TEXT_DIM(), "Please wait", Gfx::ALIGN_CENTER);
 }
 
+void TitleUninstaller::DrawInstallLoadingScreen() {
+    DrawBackground();
+    DrawTopBar();
+
+    float pulse = std::sin(Gfx::GetTicks() / 400.0f) * 0.15f + 0.85f;
+    SDL_Color cardColor = {
+        (uint8_t)(Gfx::COLOR_ACCENT().r * pulse),
+        (uint8_t)(Gfx::COLOR_ACCENT().g * pulse),
+        (uint8_t)(Gfx::COLOR_ACCENT().b * pulse), 0xff
+    };
+
+    Gfx::DrawRectFilled(563, 453, 800, 174, {0x00, 0x00, 0x00, 0x18});
+    Gfx::DrawRectRounded(560, 450, 800, 174, 20, Gfx::COLOR_PANEL_BG());
+    Gfx::DrawRectRounded(560, 450, 800, 52, 20, cardColor);
+    Gfx::DrawRectFilled(560, 482, 800, 20, cardColor);
+    Gfx::Print(960, 476, 30, Gfx::COLOR_WHITE,
+               "Scanning sd:/install for titles...",
+               Gfx::ALIGN_CENTER | Gfx::ALIGN_VERTICAL);
+    Gfx::Print(960, 560, 26, Gfx::COLOR_TEXT_DIM(), "Please wait", Gfx::ALIGN_CENTER);
+}
+
 void TitleUninstaller::DrawSettingsScreen() {
     DrawBackground();
-    DrawAppHeader("/ Settings");
+    const char* headerTitle = (appMode == AppMode::Install)
+                              ? "Title Installer" : "Title Uninstaller";
+    DrawAppHeader(headerTitle, "/ Settings");
 
     int cw = 860, ch = 460;
     int cx = (Gfx::SCREEN_WIDTH  - cw) / 2;

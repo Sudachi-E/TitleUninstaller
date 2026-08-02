@@ -56,6 +56,15 @@ enum class AppState {
     Uninstalling,
     Done,
     Settings,
+    InstallScan,
+    InstallConfirm,
+    Installing,
+};
+
+enum class AppMode {
+    Uninstall,
+    Install,
+    COUNT,
 };
 
 class TitleUninstaller {
@@ -79,9 +88,18 @@ private:
     void LoadPrefs();
 
     void LoadNextPendingIcon();
+    void LoadNextPendingIconFrom(std::vector<std::unique_ptr<TitleEntry>>& list);
 
     void StartUninstall();
     bool UninstallNext();
+
+    void SwitchMode();
+    void SwitchStorage();
+    void EnterInstallMode();
+
+    void ScanInstallSources();
+    void StartInstall();
+    bool InstallNext();
 
     void UpdateList(Input& input, float dt);
     void UpdateSelectComponents(Input& input);
@@ -89,7 +107,9 @@ private:
     void UpdateUninstalling(Input&);
     void UpdateDone(Input& input);
     void UpdateSettings(Input& input);
-    void SwitchStorage();
+    void UpdateInstallList(Input& input, float dt);
+    void UpdateInstallConfirm(Input& input);
+    void UpdateInstalling(Input&);
 
     void DrawBackground();
     void DrawTopBar();
@@ -102,14 +122,26 @@ private:
     void DrawDoneScreen();
     void DrawLoadingScreen();
     void DrawSettingsScreen();
+    void DrawInstallList();
+    void DrawTitleListImpl(const std::vector<std::unique_ptr<TitleEntry>>& list,
+                           const char* emptyText, const char* emptySub);
+    void DrawInstallConfirmDialog();
+    void DrawInstallProgress();
+    void DrawInstallLoadingScreen();
+    void DrawInstallDoneScreen();
 
     std::string FormatSize(uint64_t bytes) const;
     int      CheckedCount() const;
     uint64_t CheckedBytes() const;
+    int      InstallCheckedCount() const;
+    uint64_t InstallCheckedBytes() const;
     void     ApplySort();
+    void     ApplySortFor(std::vector<std::unique_ptr<TitleEntry>>& list);
 
     AppState state;
+    AppMode  appMode;
     std::vector<std::unique_ptr<TitleEntry>> titles;
+    std::vector<std::unique_ptr<TitleEntry>> installTitles;
 
     int  selectedIndex;
     bool loadingScreenShown;
@@ -133,6 +165,7 @@ private:
     bool keepAwake;
 
     std::vector<UninstallJob> uninstallQueue;
+    std::vector<UninstallJob> installQueue;
     std::vector<ComponentChoice> componentChoices;
     int componentFocusIdx;
     int componentFocusComponent;
@@ -143,7 +176,23 @@ private:
     bool uninstallSeenActive;
     int  uninstallPollFrames;
     int32_t mcpHandle;
-    MCPInstallTitleInfo mcpTitleInfo;
+    MCPInstallTitleInfo mcpTitleInfo __attribute__((aligned(0x40)));
+
+    int  installCurrent;
+    int  installSucceeded;
+    int  installFailed;
+    bool installInProgress;
+    bool installSeenActive;
+    int  installPollFrames;
+    uint64_t installSizeTotal;
+    uint64_t installSizeProgress;
+    uint32_t installContentsTotal;
+    uint32_t installContentsProgress;
+    bool lastOperationInstall;
+
+    volatile bool    installMcpProcessing;
+    volatile int32_t installMcpErr;
+    static void InstallMcpCallback(MCPError err, void* rawData);
 
     uint64_t storageTotalBytes;
     uint64_t storageFreeBytes;

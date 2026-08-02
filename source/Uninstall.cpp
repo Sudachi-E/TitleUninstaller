@@ -75,6 +75,7 @@ void TitleUninstaller::StartUninstall() {
     OSEnableHomeButtonMenu(FALSE);
     LOG("Home button menu disabled during uninstall");
 
+    lastOperationInstall = false;
     state = AppState::Uninstalling;
     LOG("Starting batch uninstall of %zu jobs", uninstallQueue.size());
 }

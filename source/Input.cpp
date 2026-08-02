@@ -1,7 +1,9 @@
 #include "Input.hpp"
 #include <cstring>
 
-Input::Input() : buttonsPressed(0), buttonsHeld(0) {
+Input::Input() : buttonsPressed(0), buttonsHeld(0),
+                 rstickLeft(false), rstickRight(false),
+                 rstickLeftPrev(false), rstickRightPrev(false) {
     memset(&vpadStatus,  0, sizeof(vpadStatus));
     memset(&kpadStatus,  0, sizeof(kpadStatus));
 
@@ -33,10 +35,32 @@ void Input::Update() {
 
     buttonsPressed = pressed;
     buttonsHeld    = held;
+
+    bool curLeft  = false;
+    bool curRight = false;
+
+    if (vpadError == VPAD_READ_SUCCESS) {
+        if (vpadStatus.rightStick.x <= -0.60f) curLeft  = true;
+        if (vpadStatus.rightStick.x >=  0.60f) curRight = true;
+    }
+    for (int ch = 0; ch < 4; ch++) {
+        KPADStatus& k = kpadStatus[ch];
+        if (k.extensionType != WPAD_EXT_PRO_CONTROLLER) continue;
+        if (k.pro.rightStick.x <= -0.60f) curLeft  = true;
+        if (k.pro.rightStick.x >=  0.60f) curRight = true;
+    }
+
+    rstickLeftPrev  = rstickLeft;
+    rstickRightPrev = rstickRight;
+    rstickLeft      = curLeft;
+    rstickRight     = curRight;
 }
 
 bool Input::IsPressed(uint32_t button) const { return (buttonsPressed & button) != 0; }
 bool Input::IsHeld(uint32_t button)    const { return (buttonsHeld    & button) != 0; }
+
+bool Input::RightStickLeft()  const { return  rstickLeft  && !rstickLeftPrev;  }
+bool Input::RightStickRight() const { return  rstickRight && !rstickRightPrev; }
 
 uint32_t Input::MapVPADButtons(uint32_t v) {
     uint32_t m = 0;

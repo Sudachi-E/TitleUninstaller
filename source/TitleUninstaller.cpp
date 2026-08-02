@@ -16,12 +16,18 @@ TitleEntry::~TitleEntry() {
 
 TitleUninstaller::TitleUninstaller()
     : state(AppState::Loading),
+      appMode(AppMode::Uninstall),
       selectedIndex(0), loadingScreenShown(false),
       sortMode(SortMode::Alphabetical),
       currentStorage(StorageLocation::USB),
       themeMode(ThemeMode::Dark), settingsSelectedItem(0), keepAwake(false),
       uninstallCurrent(0), uninstallSucceeded(0), uninstallFailed(0),
       uninstallInProgress(false), uninstallSeenActive(false), uninstallPollFrames(0), mcpHandle(-1),
+      installCurrent(0), installSucceeded(0), installFailed(0),
+      installInProgress(false), installSeenActive(false), installPollFrames(0),
+      installSizeTotal(0), installSizeProgress(0),
+      installContentsTotal(0), installContentsProgress(0), lastOperationInstall(false),
+      installMcpProcessing(true), installMcpErr(0),
       storageTotalBytes(0), storageFreeBytes(0),
       lastTick(0), selectionPulse(0.0f), scrollAnim(0.0f), targetScroll(0),
       highlightBarAnim(0.0f), holdTimer(0.0f), repeatAccum(0.0f)
@@ -53,6 +59,16 @@ TitleUninstaller::TitleUninstaller()
 
         QueryStorage();
         state = AppState::List;
+
+        if (appMode == AppMode::Install) {
+            if (currentStorage == StorageLocation::USB)
+                titlesUSB  = std::move(titles);
+            else
+                titlesNAND = std::move(titles);
+            titles.clear();
+            loadingScreenShown = false;
+            state = AppState::InstallScan;
+        }
     }
 }
 
@@ -82,6 +98,7 @@ void TitleUninstaller::SavePrefs() {
     if (!f) return;
     fprintf(f, "theme=%d\n", (int)themeMode);
     fprintf(f, "storage=%d\n", (int)currentStorage);
+    fprintf(f, "mode=%d\n", (int)appMode);
     fprintf(f, "keepAwake=%d\n", keepAwake ? 1 : 0);
     fclose(f);
 }
@@ -102,6 +119,10 @@ void TitleUninstaller::LoadPrefs() {
         if (sscanf(line, "storage=%d", &val) == 1) {
             currentStorage = (val == (int)StorageLocation::NAND)
                              ? StorageLocation::NAND : StorageLocation::USB;
+        }
+        if (sscanf(line, "mode=%d", &val) == 1) {
+            appMode = (val == (int)AppMode::Install)
+                      ? AppMode::Install : AppMode::Uninstall;
         }
         if (sscanf(line, "keepAwake=%d", &val) == 1) {
             keepAwake = (val == 1);
@@ -131,6 +152,22 @@ void TitleUninstaller::Update(Input& input) {
     }
     highlightBarAnim += (targetFrac - highlightBarAnim) * 0.12f;
 
+    bool wantModeSwitch = (appMode == AppMode::Uninstall)
+                          ? input.RightStickRight()
+                          : input.RightStickLeft();
+    if (wantModeSwitch) {
+        switch (state) {
+        case AppState::Loading:
+        case AppState::InstallScan:
+        case AppState::Uninstalling:
+        case AppState::Installing:
+            break;
+        default:
+            SwitchMode();
+            break;
+        }
+    }
+
     switch (state) {
 
     case AppState::Loading: {
@@ -142,12 +179,30 @@ void TitleUninstaller::Update(Input& input) {
             OSReport("[UNINSTALLER] LoadTitles done, %zu titles\n", titles.size());
             loadingScreenShown = false;
             state = AppState::List;
+            if (appMode == AppMode::Install)
+                EnterInstallMode();
+        }
+        break;
+    }
+
+    case AppState::InstallScan: {
+        if (!loadingScreenShown) {
+            loadingScreenShown = true;
+        } else {
+            OSReport("[INSTALLER] ScanInstallSources begin\n");
+            ScanInstallSources();
+            OSReport("[INSTALLER] ScanInstallSources done, %zu titles\n", installTitles.size());
+            loadingScreenShown = false;
+            state = AppState::List;
         }
         break;
     }
 
     case AppState::List:
-        UpdateList(input, dt);
+        if (appMode == AppMode::Install)
+            UpdateInstallList(input, dt);
+        else
+            UpdateList(input, dt);
         break;
 
     case AppState::SelectComponents:
@@ -160,6 +215,14 @@ void TitleUninstaller::Update(Input& input) {
 
     case AppState::Uninstalling:
         UpdateUninstalling(input);
+        break;
+
+    case AppState::InstallConfirm:
+        UpdateInstallConfirm(input);
+        break;
+
+    case AppState::Installing:
+        UpdateInstalling(input);
         break;
 
     case AppState::Done:
@@ -355,6 +418,191 @@ void TitleUninstaller::SwitchStorage() {
     }
 }
 
+void TitleUninstaller::SwitchMode() {
+    if (appMode == AppMode::Uninstall) {
+        EnterInstallMode();
+    } else {
+        appMode = AppMode::Uninstall;
+
+        auto& list = (currentStorage == StorageLocation::USB)
+                     ? titlesUSB : titlesNAND;
+        if (!list.empty()) {
+            titles = std::move(list);
+            selectedIndex = 0;
+            targetScroll  = 0;
+            scrollAnim    = 0.0f;
+            QueryStorage();
+            ApplySort();
+            state = AppState::List;
+        } else {
+            titles.clear();
+            selectedIndex      = 0;
+            targetScroll       = 0;
+            scrollAnim         = 0.0f;
+            loadingScreenShown = false;
+            QueryStorage();
+            state = AppState::Loading;
+        }
+    }
+    SavePrefs();
+}
+
+void TitleUninstaller::EnterInstallMode() {
+    if (currentStorage == StorageLocation::USB)
+        titlesUSB  = std::move(titles);
+    else
+        titlesNAND = std::move(titles);
+    titles.clear();
+
+    appMode = AppMode::Install;
+    installTitles.clear();
+    selectedIndex      = 0;
+    targetScroll       = 0;
+    scrollAnim         = 0.0f;
+    loadingScreenShown = false;
+    QueryStorage();
+    state = AppState::InstallScan;
+}
+
+void TitleUninstaller::UpdateInstallList(Input& input, float dt) {
+    LoadNextPendingIcon();
+
+    int maxIdx = (int)installTitles.size() - 1;
+
+    bool holdingDown = input.IsHeld(Input::BUTTON_DOWN);
+    bool holdingUp   = input.IsHeld(Input::BUTTON_UP);
+    bool holding     = holdingDown || holdingUp;
+
+    int navDelta = 0;
+
+    if (input.IsPressed(Input::BUTTON_DOWN) || input.IsPressed(Input::BUTTON_UP)) {
+        navDelta   = input.IsPressed(Input::BUTTON_DOWN) ? 1 : -1;
+        holdTimer  = 0.0f;
+        repeatAccum = 0.0f;
+    } else if (holding) {
+        holdTimer += dt;
+        if (holdTimer >= 0.3f) {
+            float interval = (holdTimer < 1.5f) ? 0.12f : 0.04f;
+            repeatAccum += dt;
+            while (repeatAccum >= interval) {
+                repeatAccum -= interval;
+                navDelta += holdingDown ? 1 : -1;
+            }
+        }
+    } else {
+        holdTimer   = 0.0f;
+        repeatAccum = 0.0f;
+    }
+
+    if (navDelta != 0) {
+        auto moveSelection = [&](int delta) {
+            if (delta > 0) {
+                if (selectedIndex < maxIdx) {
+                    selectedIndex++;
+                    if (selectedIndex >= targetScroll + VISIBLE_ROWS)
+                        targetScroll = selectedIndex - VISIBLE_ROWS + 1;
+                } else {
+                    selectedIndex = 0;
+                    targetScroll  = 0;
+                }
+            } else {
+                if (selectedIndex > 0) {
+                    selectedIndex--;
+                    if (selectedIndex < targetScroll)
+                        targetScroll = selectedIndex;
+                } else {
+                    selectedIndex = maxIdx;
+                    targetScroll  = std::max(0, maxIdx - VISIBLE_ROWS + 1);
+                }
+            }
+        };
+
+        int steps = std::min(std::abs(navDelta), (int)installTitles.size());
+        int dir   = (navDelta > 0) ? 1 : -1;
+        for (int s = 0; s < steps; s++) moveSelection(dir);
+    }
+
+    if (input.IsPressed(Input::BUTTON_A)) {
+        if (!installTitles.empty())
+            installTitles[selectedIndex]->checked = !installTitles[selectedIndex]->checked;
+    }
+
+    if (input.IsPressed(Input::BUTTON_Y)) {
+        bool anyUnchecked = false;
+        for (const auto& t : installTitles) if (!t->checked) { anyUnchecked = true; break; }
+        for (auto& t : installTitles) t->checked = anyUnchecked;
+    }
+
+    if (input.IsPressed(Input::BUTTON_PLUS)) {
+        if (InstallCheckedCount() > 0)
+            state = AppState::InstallConfirm;
+    }
+
+    if (input.IsPressed(Input::BUTTON_X)) {
+        installTitles.clear();
+        selectedIndex      = 0;
+        targetScroll       = 0;
+        scrollAnim         = 0.0f;
+        loadingScreenShown = false;
+        state = AppState::InstallScan;
+    }
+
+    if (input.IsPressed(Input::BUTTON_MINUS)) {
+        settingsSelectedItem = 0;
+        state = AppState::Settings;
+    }
+
+    if (input.IsPressed(Input::BUTTON_L) || input.IsPressed(Input::BUTTON_R)) {
+        int next = (int)sortMode;
+        if (input.IsPressed(Input::BUTTON_R))
+            next = (next + 1) % (int)SortMode::COUNT;
+        else
+            next = (next - 1 + (int)SortMode::COUNT) % (int)SortMode::COUNT;
+        sortMode = (SortMode)next;
+        ApplySortFor(installTitles);
+        selectedIndex = 0;
+        targetScroll  = 0;
+        scrollAnim    = 0.0f;
+    }
+
+    if (input.IsPressed(Input::BUTTON_ZL) || input.IsPressed(Input::BUTTON_ZR)) {
+        currentStorage = (currentStorage == StorageLocation::USB)
+                         ? StorageLocation::NAND : StorageLocation::USB;
+        SavePrefs();
+        QueryStorage();
+    }
+}
+
+void TitleUninstaller::UpdateInstallConfirm(Input& input) {
+    if (input.IsPressed(Input::BUTTON_A)) {
+        StartInstall();
+    }
+    if (input.IsPressed(Input::BUTTON_B)) {
+        state = AppState::List;
+    }
+}
+
+void TitleUninstaller::UpdateInstalling(Input&) {
+    InstallNext();
+}
+
+void TitleUninstaller::UpdateDone(Input& input) {
+    if (input.IsPressed(Input::BUTTON_A)) {
+        if (lastOperationInstall) {
+            for (auto& t : installTitles) t->checked = false;
+            selectedIndex = std::min(selectedIndex, std::max(0, (int)installTitles.size() - 1));
+            targetScroll  = std::min(targetScroll,  std::max(0, (int)installTitles.size() - 1));
+            scrollAnim    = (float)targetScroll;
+        } else {
+            for (auto& t : titles) t->checked = false;
+            selectedIndex      = std::min(selectedIndex, std::max(0, (int)titles.size() - 1));
+            targetScroll       = std::min(targetScroll,  std::max(0, (int)titles.size() - 1));
+            scrollAnim         = (float)targetScroll;
+        }
+        state = AppState::List;
+    }
+}
+
 void TitleUninstaller::UpdateSelectComponents(Input& input) {
     if (componentChoices.empty()) {
         state = AppState::List;
@@ -420,16 +668,6 @@ void TitleUninstaller::UpdateUninstalling(Input&) {
     UninstallNext();
 }
 
-void TitleUninstaller::UpdateDone(Input& input) {
-    if (input.IsPressed(Input::BUTTON_A)) {
-        for (auto& t : titles) t->checked = false;
-        selectedIndex      = std::min(selectedIndex, std::max(0, (int)titles.size() - 1));
-        targetScroll       = std::min(targetScroll,  std::max(0, (int)titles.size() - 1));
-        scrollAnim         = (float)targetScroll;
-        state = AppState::List;
-    }
-}
-
 void TitleUninstaller::UpdateSettings(Input& input) {
     if (input.IsPressed(Input::BUTTON_UP))
         settingsSelectedItem = std::max(0, settingsSelectedItem - 1);
@@ -469,10 +707,17 @@ void TitleUninstaller::Draw() {
         DrawLoadingScreen();
         break;
 
+    case AppState::InstallScan:
+        DrawInstallLoadingScreen();
+        break;
+
     case AppState::List:
         DrawBackground();
         DrawTopBar();
-        DrawList();
+        if (appMode == AppMode::Install)
+            DrawInstallList();
+        else
+            DrawList();
         DrawStoragePanel();
         DrawBottomBar();
         break;
@@ -484,6 +729,15 @@ void TitleUninstaller::Draw() {
         DrawStoragePanel();
         DrawBottomBar();
         DrawConfirmDialog();
+        break;
+
+    case AppState::InstallConfirm:
+        DrawBackground();
+        DrawTopBar();
+        DrawInstallList();
+        DrawStoragePanel();
+        DrawBottomBar();
+        DrawInstallConfirmDialog();
         break;
 
     case AppState::SelectComponents:
@@ -499,8 +753,15 @@ void TitleUninstaller::Draw() {
         DrawUninstallProgress();
         break;
 
+    case AppState::Installing:
+        DrawInstallProgress();
+        break;
+
     case AppState::Done:
-        DrawDoneScreen();
+        if (lastOperationInstall)
+            DrawInstallDoneScreen();
+        else
+            DrawDoneScreen();
         break;
 
     case AppState::Settings:
